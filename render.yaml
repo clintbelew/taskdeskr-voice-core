@@ -1,0 +1,44 @@
+# TaskDeskr Voice Core — Render Deployment Configuration
+# Reference: https://render.com/docs/render-yaml-reference
+
+services:
+  - type: web
+    name: taskdeskr-voice-core
+    runtime: python
+    region: oregon
+    plan: starter
+
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+
+    healthCheckPath: /health
+
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: DEBUG
+        value: "false"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: DEFAULT_LLM_PROVIDER
+        value: "openai"
+      - key: OPENAI_MODEL
+        value: "gpt-4o"
+      - key: ANTHROPIC_MODEL
+        value: "claude-3-5-sonnet-20241022"
+      - key: VAPI_WEBHOOK_SECRET
+        sync: false
+      - key: GHL_API_KEY
+        sync: false
+      - key: GHL_LOCATION_ID
+        sync: false
+      - key: GHL_CALENDAR_ID
+        sync: false
+      - key: GHL_PIPELINE_ID
+        sync: false
+      - key: GHL_TIMEZONE
+        value: "America/Chicago"
+      - key: ESCALATION_PHONE_NUMBER
+        sync: false
