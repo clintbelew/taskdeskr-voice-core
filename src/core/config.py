@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # Routing: "openai" | "anthropic" | "auto"
     # "auto" uses Claude for summarization/reasoning, GPT for everything else
     DEFAULT_LLM_PROVIDER: Literal["openai", "anthropic", "auto"] = "openai"
-    OPENAI_MODEL: str = "gpt-4o"
+    OPENAI_MODEL: str = "gpt-4.1-mini"
     ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20241022"
 
     # ── GoHighLevel ───────────────────────────────────────────────────────────
