@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     GHL_LOCATION_ID: str = Field(default="BsrmNxNTZZ6OsEosQFuo", description="GHL Location ID")
     GHL_TIMEZONE: str = "America/Chicago"
 
+    # ── Redis ─────────────────────────────────────────────────────────────────
+    REDIS_URL: str = Field(
+        default="",
+        description="Redis connection URL (redis://... or rediss://...). Leave empty to use in-memory fallback."
+    )
+
     # ── Escalation ────────────────────────────────────────────────────────────
     ESCALATION_PHONE_NUMBER: str = Field(
         default="", description="Phone number to transfer escalated calls to"

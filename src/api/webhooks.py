@@ -14,9 +14,9 @@ Vapi sends events to your server URL for:
 Each handler is a pure async function that receives the parsed payload
 and returns a response dict (serialized to JSON by the route layer).
 
+State is persisted in Redis (with in-memory fallback) via call_state manager.
 Reference: https://docs.vapi.ai/server-url
 """
-
 from __future__ import annotations
 
 import hashlib
@@ -26,19 +26,13 @@ from typing import Any, Optional
 
 from src.core.config import settings
 from src.core.logger import get_logger, set_call_context, clear_call_context
+from src.core.state import call_state
 from src.services import context as ctx_service
 from src.services import summary as summary_service
 from src.tools import dispatcher
 from src.tools.definitions import TOOL_DEFINITIONS
 
 logger = get_logger(__name__)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# In-memory call state store
-# Maps call_id → mutable state dict shared across all handlers for that call
-# Replace with Redis for multi-instance / multi-worker deployments
-# ─────────────────────────────────────────────────────────────────────────────
-_call_state: dict[str, dict[str, Any]] = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -54,7 +48,6 @@ def verify_vapi_signature(payload_bytes: bytes, signature_header: str) -> bool:
     if not secret:
         logger.warning("VAPI_WEBHOOK_SECRET not set — skipping signature verification")
         return True
-
     expected = hmac.new(
         secret.encode(), payload_bytes, digestmod=hashlib.sha256
     ).hexdigest()
@@ -74,31 +67,24 @@ async def handle_vapi_event(payload: dict[str, Any]) -> dict[str, Any]:
     event_type = message.get("type", "")
     call       = message.get("call", {})
     call_id    = call.get("id", message.get("call_id", "unknown"))
+    phone      = _extract_phone(call)
 
-    phone = _extract_phone(call)
     set_call_context(call_id=call_id, phone=phone)
-
     logger.info("Vapi event received", extra={"event_type": event_type})
 
     try:
         if event_type == "assistant-request":
             return await _handle_assistant_request(message, call_id, phone)
-
         elif event_type == "call-started":
             return await _handle_call_started(message, call_id, phone)
-
         elif event_type == "function-call":
             return await _handle_function_call(message, call_id)
-
         elif event_type == "end-of-call-report":
             return await _handle_end_of_call(message, call_id)
-
         elif event_type == "transcript":
-            return _handle_transcript(message, call_id)
-
+            return await _handle_transcript(message, call_id)
         elif event_type == "hang":
-            return _handle_hang(call_id)
-
+            return await _handle_hang(call_id)
         else:
             logger.info("Unhandled Vapi event type", extra={"event_type": event_type})
             return {"status": "ignored", "event_type": event_type}
@@ -125,41 +111,47 @@ async def _handle_assistant_request(
     phone: Optional[str],
 ) -> dict[str, Any]:
     """
-    Vapi calls this when it needs the assistant configuration.
-    We return a dynamic assistant config with a context-enriched system prompt.
+    Vapi calls this BEFORE the call begins — we resolve the GHL contact here
+    and store contact_id in Redis state before returning the assistant config.
+    Nothing speaks until this function returns.
     """
-    logger.info("Handling assistant-request")
+    logger.info("Handling assistant-request — resolving GHL contact before call starts")
 
+    # Build context: looks up GHL contact by phone, assembles system prompt
     system_prompt, contact = await ctx_service.build_context(phone=phone or "")
-
     contact_id = contact.get("id") if contact else None
 
-    # Initialize call state — this dict is shared across all handlers for this call
-    _call_state[call_id] = {
-        "system_prompt":  system_prompt,
-        "contact":        contact,
-        "contact_id":     contact_id,
-        "phone":          phone,
-        "transcript":     [],
-        "messages":       [],
-        # Phase 1 tracking fields
-        "caller_first_name":       contact.get("firstName", "") if contact else "",
-        "caller_last_name":        contact.get("lastName", "")  if contact else "",
-        "caller_email":            contact.get("email", "")     if contact else "",
-        "opportunity_id":          None,
-        "opportunity_name":        None,
-        "pipeline_stage":          "new_lead",
-        "booking_link_requested":  False,
-        "qualification":           {},
-        "end_reason":              None,
-    }
+    # Persist full call state to Redis (with in-memory fallback)
+    await call_state.set(call_id, {
+        "system_prompt":          system_prompt,
+        "contact":                contact,
+        "contact_id":             contact_id,
+        "phone":                  phone,
+        "transcript":             [],
+        "messages":               [],
+        "caller_first_name":      contact.get("firstName", "") if contact else "",
+        "caller_last_name":       contact.get("lastName", "")  if contact else "",
+        "caller_email":           contact.get("email", "")     if contact else "",
+        "opportunity_id":         None,
+        "opportunity_name":       None,
+        "pipeline_stage":         "new_lead",
+        "booking_link_requested": False,
+        "qualification":          {},
+        "end_reason":             None,
+    })
 
+    logger.info(
+        "Call state initialised in Redis",
+        extra={"call_id": call_id, "contact_id": contact_id, "phone": phone},
+    )
+
+    # Return the full dynamic assistant config to Vapi
     return {
         "assistant": {
             "name": "Aria — TaskDeskr AI Front Desk",
             "model": {
-                "provider": "openai",
-                "model": settings.OPENAI_MODEL,
+                "provider": "anthropic",
+                "model": settings.ANTHROPIC_MODEL,
                 "systemPrompt": system_prompt,
                 "tools": TOOL_DEFINITIONS,
                 "temperature": 0.4,
@@ -176,13 +168,15 @@ async def _handle_assistant_request(
             "recordingEnabled": True,
             "maxDurationSeconds": 600,
             "silenceTimeoutSeconds": 30,
-            "responseDelaySeconds": 0.5,
+            "responseDelaySeconds": 0.4,
             "numWordsToInterruptAssistant": 3,
             "transcriber": {
                 "provider": "deepgram",
                 "model": "nova-2",
                 "language": "en-US",
+                "endpointing": 300,
             },
+            "backgroundDenoisingEnabled": True,
         }
     }
 
@@ -192,28 +186,32 @@ async def _handle_call_started(
     call_id: str,
     phone: Optional[str],
 ) -> dict[str, Any]:
-    """Initialize call state if not already done via assistant-request."""
-    if call_id not in _call_state:
+    """
+    Fallback initialiser — only runs if assistant-request was not fired
+    (e.g. when using a pre-built Vapi assistant instead of server-driven mode).
+    """
+    if not await call_state.exists(call_id):
+        logger.info("call-started without prior assistant-request — initialising state now")
         system_prompt, contact = await ctx_service.build_context(phone=phone or "")
         contact_id = contact.get("id") if contact else None
-        _call_state[call_id] = {
-            "system_prompt":  system_prompt,
-            "contact":        contact,
-            "contact_id":     contact_id,
-            "phone":          phone,
-            "transcript":     [],
-            "messages":       [],
-            "caller_first_name":       contact.get("firstName", "") if contact else "",
-            "caller_last_name":        contact.get("lastName", "")  if contact else "",
-            "caller_email":            contact.get("email", "")     if contact else "",
-            "opportunity_id":          None,
-            "opportunity_name":        None,
-            "pipeline_stage":          "new_lead",
-            "booking_link_requested":  False,
-            "qualification":           {},
-            "end_reason":              None,
-        }
-        logger.info("Call state initialized on call-started")
+        await call_state.set(call_id, {
+            "system_prompt":          system_prompt,
+            "contact":                contact,
+            "contact_id":             contact_id,
+            "phone":                  phone,
+            "transcript":             [],
+            "messages":               [],
+            "caller_first_name":      contact.get("firstName", "") if contact else "",
+            "caller_last_name":       contact.get("lastName", "")  if contact else "",
+            "caller_email":           contact.get("email", "")     if contact else "",
+            "opportunity_id":         None,
+            "opportunity_name":       None,
+            "pipeline_stage":         "new_lead",
+            "booking_link_requested": False,
+            "qualification":          {},
+            "end_reason":             None,
+        })
+        logger.info("Call state initialised on call-started")
     else:
         logger.info("Call state already exists from assistant-request")
 
@@ -225,8 +223,8 @@ async def _handle_function_call(
     call_id: str,
 ) -> dict[str, Any]:
     """
-    Execute a tool call requested by the LLM during the conversation.
-    Returns the tool result in the format Vapi expects.
+    Execute a tool call requested by the LLM and return the result.
+    State is read from and written back to Redis.
     """
     func_call = message.get("functionCall", {})
     tool_name = func_call.get("name", "")
@@ -234,28 +232,38 @@ async def _handle_function_call(
     if isinstance(arguments, dict):
         arguments = json.dumps(arguments)
 
-    # Get the mutable call state — pass it to the dispatcher so handlers
-    # can read and write contact_id, opportunity_id, etc.
-    state = _call_state.get(call_id)
-    if state is None:
-        # Pre-built assistant: no assistant-request or call-started fired yet.
-        # Initialize state from the message's call object so we can resolve the contact.
-        call_obj = message.get("call", {})
+    logger.info("Executing tool call", extra={"tool": tool_name})
+
+    # Load state from Redis
+    state = await call_state.get(call_id)
+
+    # Edge case: state is empty (pre-built assistant, no assistant-request fired)
+    if not state:
+        call_obj        = message.get("call", {})
         phone_from_call = _extract_phone(call_obj)
-        state = {"phone": phone_from_call, "contact_id": None, "messages": []}
-        _call_state[call_id] = state
-        logger.info(
-            "Initialized call state from function-call event",
-            extra={"call_id": call_id, "phone": phone_from_call},
-        )
+        state = {"phone": phone_from_call, "contact_id": None, "messages": [], "qualification": {}}
+        if phone_from_call:
+            logger.info(
+                "Empty state on function-call — resolving contact from phone",
+                extra={"phone": phone_from_call},
+            )
+            try:
+                from src.services import ghl as ghl_svc
+                contact = await ghl_svc.lookup_contact_by_phone(phone_from_call)
+                if not contact:
+                    contact = await ghl_svc.create_contact(phone=phone_from_call)
+                if contact:
+                    state["contact_id"] = contact.get("id")
+                    state["contact"]    = contact
+            except Exception as exc:
+                logger.error("GHL lookup failed in function-call fallback", extra={"error": str(exc)})
+        await call_state.set(call_id, state)
     elif not state.get("phone"):
         # State exists but phone is missing — extract from message
-        call_obj = message.get("call", {})
+        call_obj        = message.get("call", {})
         phone_from_call = _extract_phone(call_obj)
         if phone_from_call:
-            state["phone"] = phone_from_call
-
-    logger.info("Executing tool call", extra={"tool": tool_name, "phone": state.get("phone")})
+            state = await call_state.update(call_id, {"phone": phone_from_call})
 
     result = await dispatcher.dispatch(
         tool_name=tool_name,
@@ -265,21 +273,18 @@ async def _handle_function_call(
         call_state=state,
     )
 
-    # Sync any contact_id updates back to the main state
-    if state.get("contact_id") and call_id in _call_state:
-        _call_state[call_id]["contact_id"] = state["contact_id"]
+    # Persist any state mutations back to Redis
+    await call_state.set(call_id, state)
 
     # Handle Vapi flow control actions
-    action = result.get("action", {})
+    action      = result.get("action", {})
     action_type = action.get("type", "") if isinstance(action, dict) else ""
-
     if action_type == "end-call":
         return {
             "result": result.get("result", "Thank you for calling. Goodbye!"),
             "action": {"type": "end-call"},
         }
 
-    # Standard tool result — returned as text to the LLM
     return {"result": result.get("result", str(result))}
 
 
@@ -289,37 +294,36 @@ async def _handle_end_of_call(
 ) -> dict[str, Any]:
     """
     Process the end-of-call report: generate a structured summary and
-    push it to GHL as a note. Clean up call state.
+    push it to GHL as a note. Clean up call state from Redis.
     """
     logger.info("Processing end-of-call report")
 
-    state = _call_state.pop(call_id, {})
+    # Pop state from Redis (removes it after reading)
+    state      = await call_state.delete(call_id)
     contact    = state.get("contact") or {}
     contact_id = state.get("contact_id") or contact.get("id")
 
-    # If no contact_id in state (e.g. pre-built assistant, no assistant-request fired),
-    # look up or create the contact from the caller's phone number now.
+    # Fallback: resolve contact from phone if not in state
     if not contact_id:
         call_obj = message.get("call", {})
-        phone = _extract_phone(call_obj) or state.get("phone")
+        phone    = _extract_phone(call_obj) or state.get("phone")
         if phone:
-            logger.info("No contact in state — looking up/creating GHL contact", extra={"phone": phone})
+            logger.info("No contact in state — looking up GHL contact at end-of-call", extra={"phone": phone})
             try:
                 from src.services import ghl as ghl_svc
                 contact = await ghl_svc.lookup_contact_by_phone(phone)
                 if not contact:
-                    # Create a new contact with just the phone number
                     contact = await ghl_svc.create_contact(phone=phone)
                 if contact:
                     contact_id = contact.get("id")
-                    logger.info("GHL contact resolved", extra={"contact_id": contact_id})
+                    logger.info("GHL contact resolved at end-of-call", extra={"contact_id": contact_id})
             except Exception as exc:
-                logger.error("Failed to resolve GHL contact", extra={"error": str(exc)})
+                logger.error("Failed to resolve GHL contact at end-of-call", extra={"error": str(exc)})
 
     # Build transcript from Vapi's artifact
-    artifact        = message.get("artifact", {})
-    raw_transcript  = artifact.get("transcript", "")
-    vapi_messages   = artifact.get("messages", [])
+    artifact       = message.get("artifact", {})
+    raw_transcript = artifact.get("transcript", "")
+    vapi_messages  = artifact.get("messages", [])
 
     if vapi_messages:
         transcript = [
@@ -342,30 +346,32 @@ async def _handle_end_of_call(
     )
 
     logger.info(
-        "Call ended and summarized",
+        "Call ended and summarised",
         extra={
             "outcome":    summary.get("outcome"),
             "sentiment":  summary.get("sentiment"),
             "contact_id": contact_id,
         },
     )
-
     return {"status": "ok", "summary": summary}
 
 
-def _handle_transcript(message: dict[str, Any], call_id: str) -> dict[str, Any]:
+async def _handle_transcript(message: dict[str, Any], call_id: str) -> dict[str, Any]:
     """Accumulate real-time transcript chunks into call state."""
     role = message.get("role", "unknown")
     text = message.get("transcript", "")
-    if call_id in _call_state and text:
-        _call_state[call_id]["messages"].append({"role": role, "content": text})
+    if text and await call_state.exists(call_id):
+        state    = await call_state.get(call_id)
+        messages = state.get("messages", [])
+        messages.append({"role": role, "content": text})
+        await call_state.update(call_id, {"messages": messages})
     return {"status": "ok"}
 
 
-def _handle_hang(call_id: str) -> dict[str, Any]:
+async def _handle_hang(call_id: str) -> dict[str, Any]:
     """Clean up state if Vapi sends a hang event without end-of-call-report."""
-    _call_state.pop(call_id, None)
-    logger.info("Call hung up — state cleared")
+    await call_state.delete(call_id)
+    logger.info("Call hung up — state cleared from Redis")
     return {"status": "ok"}
 
 
@@ -380,19 +386,19 @@ def _extract_phone(call: dict[str, Any]) -> Optional[str]:
 
 
 def _build_greeting(contact: Optional[dict[str, Any]]) -> str:
-    """Build a personalized opening greeting."""
+    """Build a personalised opening greeting based on CRM data."""
     if not contact:
         return (
-            "Thank you for calling TaskDeskr. This is Aria, your AI front desk assistant. "
+            "Thank you for calling! This is Aria, your AI front desk assistant. "
             "How can I help you today?"
         )
     first_name = contact.get("firstName", "")
     if first_name:
         return (
-            f"Hi {first_name}! Thank you for calling TaskDeskr. "
-            "This is Aria. How can I help you today?"
+            f"Hi {first_name}! Thanks for calling. This is Aria. "
+            "How can I help you today?"
         )
     return (
-        "Thank you for calling TaskDeskr. This is Aria, your AI front desk assistant. "
+        "Thank you for calling! This is Aria, your AI front desk assistant. "
         "How can I help you today?"
     )
