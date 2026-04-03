@@ -1,19 +1,14 @@
 """
 TaskDeskr Voice Core — Context Builder
-========================================
-Assembles a rich system prompt for the LLM by pulling prior CRM data
-from GoHighLevel before the call begins.
+=======================================
+Builds the system prompt and Vapi assistant configuration for each call.
 
-The context builder is called once at call-start (assistant-request or
-call-started event) and returns a system prompt string that is injected
-into every subsequent LLM completion for that call.
+The system prompt is dynamically constructed from:
+  - The base persona (always the same)
+  - CRM context (caller's name, history, tags — if they exist in GHL)
 
-Context includes:
-  - Caller identity (name, email)
-  - Prior tags (intent signals, lead status)
-  - Recent notes (last 3)
-  - Open opportunities
-  - Agent persona and task instructions
+This is what makes the AI feel like it knows the caller and can skip
+redundant questions for returning patients.
 """
 
 from __future__ import annotations
@@ -25,16 +20,50 @@ from src.services import ghl
 
 logger = get_logger(__name__)
 
-# ── Default agent persona ─────────────────────────────────────────────────────
-_BASE_PERSONA = """You are a professional AI voice assistant for TaskDeskr.
-Your role is to help callers with scheduling, information, and support.
-Be concise, warm, and professional. Keep responses under 3 sentences unless more detail is needed.
-Never fabricate information — if you don't know something, say so and offer to follow up."""
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Base Persona — TaskDeskr AI Front Desk
+# ─────────────────────────────────────────────────────────────────────────────
+
+BASE_SYSTEM_PROMPT = """\
+You are Aria, the AI front desk assistant for TaskDeskr. \
+You answer inbound calls professionally, warmly, and efficiently.
+
+Your primary goals on every call:
+1. Greet the caller and confirm their name.
+2. Understand why they are calling.
+3. Collect key qualification information (insurance, chief complaint, referral source).
+4. If they want to schedule an appointment, let them know the team will send a booking link.
+5. End the call warmly.
+
+Qualification questions to ask (naturally, not as a form):
+- Do you currently have health insurance?
+- Which insurance provider are you with?
+- What is the main reason you are calling today, or what symptoms are you experiencing?
+- How did you hear about us?
+
+Rules:
+- Be conversational and warm — not robotic.
+- Ask one question at a time. Do not overwhelm the caller.
+- As soon as you have the caller's first name, call the save_caller_info tool.
+- After collecting qualification info, call save_qualification_data.
+- Call create_lead_opportunity once per call after confirming the caller's name.
+- If the caller wants to book an appointment, call send_booking_link and tell them \
+the team will text them a scheduling link shortly.
+- Do NOT attempt to book a live appointment on this call.
+- Do NOT make up information. If you do not know something, say so honestly.
+- Keep responses concise — this is a phone call, not a chat.
+- End the call with end_call when the conversation is complete.\
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Context Builder
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def build_context(
     phone: str,
-    agent_persona: str = _BASE_PERSONA,
+    agent_persona: str = BASE_SYSTEM_PROMPT,
     extra_instructions: str = "",
 ) -> tuple[str, Optional[dict[str, Any]]]:
     """
@@ -48,8 +77,7 @@ async def build_context(
     """
     contact = await ghl.lookup_contact_by_phone(phone)
 
-    crm_section = _build_crm_section(contact)
-    system_prompt = _assemble_prompt(agent_persona, crm_section, extra_instructions)
+    system_prompt = _assemble_prompt(agent_persona, contact, extra_instructions)
 
     logger.info(
         "Context built",
@@ -62,67 +90,101 @@ async def build_context(
     return system_prompt, contact
 
 
-def _build_crm_section(contact: Optional[dict[str, Any]]) -> str:
-    """Format CRM data into a readable context block for the LLM."""
-    if not contact:
-        return "CRM STATUS: This is a new caller with no existing record in the CRM."
-
-    lines = ["CRM CONTEXT (use this to personalize the conversation):"]
-
-    # Identity
-    name_parts = [contact.get("firstName", ""), contact.get("lastName", "")]
-    full_name = " ".join(p for p in name_parts if p).strip()
-    if full_name:
-        lines.append(f"  - Caller Name: {full_name}")
-    if email := contact.get("email"):
-        lines.append(f"  - Email: {email}")
-
-    # Tags
-    tags = contact.get("tags", [])
-    if tags:
-        lines.append(f"  - Tags: {', '.join(tags)}")
-
-    # Notes (most recent 3)
-    notes = contact.get("notes", [])
-    if notes:
-        lines.append("  - Recent Notes:")
-        for note in notes[:3]:
-            body = note.get("body", "").strip().replace("\n", " ")
-            if body:
-                lines.append(f"      • {body[:200]}")
-
-    # Open opportunities
-    opportunities = contact.get("opportunities", [])
-    open_opps = [o for o in opportunities if o.get("status") == "open"]
-    if open_opps:
-        lines.append(f"  - Open Opportunities: {len(open_opps)}")
-        for opp in open_opps[:2]:
-            lines.append(f"      • {opp.get('name', 'Unnamed')} — ${opp.get('monetaryValue', 0):,.0f}")
-
-    # Custom fields
-    custom_fields = contact.get("customField", [])
-    if custom_fields:
-        lines.append("  - Custom Fields:")
-        for field in custom_fields[:5]:
-            key = field.get("id", "")
-            val = field.get("value", "")
-            if key and val:
-                lines.append(f"      • {key}: {val}")
-
-    return "\n".join(lines)
-
-
 def _assemble_prompt(
     persona: str,
-    crm_section: str,
+    contact: Optional[dict[str, Any]],
     extra_instructions: str,
 ) -> str:
-    parts = [persona.strip(), "", crm_section]
+    """Combine persona, CRM context, and extra instructions into a single prompt."""
+    parts = [persona.strip()]
+
+    if contact:
+        first_name = contact.get("firstName") or contact.get("first_name") or ""
+        last_name  = contact.get("lastName")  or contact.get("last_name")  or ""
+        tags       = contact.get("tags", [])
+        full_name  = f"{first_name} {last_name}".strip()
+
+        crm_lines = ["\n--- CALLER CRM CONTEXT ---"]
+
+        if full_name:
+            crm_lines.append(f"Caller name: {full_name}")
+            crm_lines.append(
+                f"This caller is already in the CRM. Greet them by name: "
+                f"'Hi {first_name}, thanks for calling TaskDeskr!'"
+            )
+        else:
+            crm_lines.append("Caller is in the CRM but name is not on file. Ask for their name.")
+
+        if tags:
+            crm_lines.append(f"Existing tags: {', '.join(tags)}")
+
+        # Check for prior visit count custom field
+        visit_count = _get_custom_field(contact, "contact.appointment_visit_count")
+        if visit_count and visit_count not in ("0", ""):
+            crm_lines.append(f"Prior visit count: {visit_count}")
+            crm_lines.append("This is a returning patient. Acknowledge their return warmly.")
+
+        crm_lines.append("--- END CRM CONTEXT ---")
+        parts.append("\n".join(crm_lines))
+
+    else:
+        parts.append(
+            "\n\nThis is a new caller — not yet in the CRM. "
+            "Ask for their name early in the conversation."
+        )
+
     if extra_instructions:
-        parts += ["", "ADDITIONAL INSTRUCTIONS:", extra_instructions.strip()]
-    parts += [
-        "",
-        "IMPORTANT: You have access to tools for booking appointments, sending SMS, "
-        "adding tags, creating notes, and escalating calls. Use them when appropriate.",
-    ]
+        parts.append(f"\nADDITIONAL INSTRUCTIONS:\n{extra_instructions.strip()}")
+
     return "\n".join(parts)
+
+
+def _get_custom_field(contact: dict[str, Any], key: str) -> Optional[str]:
+    """Extract a custom field value from a GHL contact object."""
+    custom_fields = contact.get("customField") or contact.get("customFields") or []
+    for field in custom_fields:
+        if field.get("key") == key or field.get("id") == key:
+            return str(field.get("value") or field.get("fieldValue") or "")
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vapi Assistant Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_assistant_config(system_prompt: str, tools: list[dict]) -> dict[str, Any]:
+    """
+    Build the full Vapi assistant configuration object.
+    Returned in response to the 'assistant-request' webhook event.
+    """
+    return {
+        "name": "Aria — TaskDeskr AI Front Desk",
+        "model": {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": system_prompt}
+            ],
+            "tools": tools,
+            "temperature": 0.4,
+        },
+        "voice": {
+            "provider": "11labs",
+            "voiceId": "rachel",
+        },
+        "firstMessage": (
+            "Thank you for calling TaskDeskr. This is Aria, your AI front desk assistant. "
+            "How can I help you today?"
+        ),
+        "endCallMessage": "Thank you for calling TaskDeskr. Have a wonderful day!",
+        "endCallPhrases": [
+            "goodbye", "bye bye", "talk later", "have a good day", "thank you bye"
+        ],
+        "recordingEnabled": True,
+        "hipaaEnabled": False,
+        "maxDurationSeconds": 600,
+        "silenceTimeoutSeconds": 30,
+        "responseDelaySeconds": 0.5,
+        "llmRequestDelaySeconds": 0.1,
+        "numWordsToInterruptAssistant": 3,
+    }
