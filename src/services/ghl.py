@@ -1,20 +1,19 @@
 """
 TaskDeskr Voice Core — GoHighLevel Service
 ===========================================
-Handles all communication with the GoHighLevel (GHL) REST API v1.
+Handles all communication with the GoHighLevel REST API (v2).
 
-Capabilities:
-  - Contact lookup by phone number
-  - Contact upsert (create or update)
-  - Appointment booking
-  - Tag management (add/remove)
-  - Note creation
-  - Outbound SMS via GHL
-  - Pipeline opportunity management
-  - Custom field updates
+Phase 1 capabilities:
+  1. lookup_or_create_contact  — find by phone, create if missing
+  2. update_qualification_fields — save intake custom fields to contact
+  3. create_opportunity        — open a deal in the Voice Bot Pipeline
+  4. move_opportunity_stage    — advance the deal stage (e.g. → Booking Link Sent)
+  5. add_note                  — log structured call summary to contact timeline
+  6. add_tags                  — tag contacts (e.g. "voice-bot-lead")
+  7. send_sms                  — outbound SMS via GHL Conversations
 
-All methods are async and return typed dicts.
-Errors are logged and re-raised as GHLError for clean upstream handling.
+All methods are async. Errors raise GHLError with status code and body for
+clean upstream handling. No silent failures.
 """
 
 from __future__ import annotations
@@ -23,12 +22,29 @@ from typing import Any, Optional
 
 import httpx
 
-from src.core.config import settings
+from src.core.config import GHLCustomFields, GHLPipeline, GHLUsers, settings
 from src.core.logger import get_logger
 
 logger = get_logger(__name__)
 
-GHL_BASE = "https://rest.gohighlevel.com/v1"
+# GHL v2 API base — use v2 for contacts/opportunities, v1 for legacy endpoints
+GHL_V2 = "https://services.leadconnectorhq.com"
+GHL_V1 = "https://rest.gohighlevel.com/v1"
+
+# GHL v2 requires a different header format
+def _headers_v2() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {settings.GHL_API_KEY}",
+        "Content-Type": "application/json",
+        "Version": "2021-07-28",
+    }
+
+
+def _headers_v1() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {settings.GHL_API_KEY}",
+        "Content-Type": "application/json",
+    }
 
 
 class GHLError(Exception):
@@ -40,15 +56,6 @@ class GHLError(Exception):
         self.body = body
 
 
-# ── HTTP client ───────────────────────────────────────────────────────────────
-
-def _headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {settings.GHL_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-
 def _raise_for_status(response: httpx.Response, context: str) -> None:
     if response.status_code not in (200, 201):
         logger.error(
@@ -56,60 +63,63 @@ def _raise_for_status(response: httpx.Response, context: str) -> None:
             extra={"status": response.status_code, "body": response.text[:500]},
         )
         raise GHLError(
-            f"GHL {context} failed with status {response.status_code}",
+            f"GHL {context} failed with HTTP {response.status_code}",
             status_code=response.status_code,
             body=response.text,
         )
 
 
-# ── Contact operations ────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Contact Operations
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def lookup_contact_by_phone(phone: str) -> Optional[dict[str, Any]]:
     """
     Search GHL for a contact matching the given phone number.
     Returns the first match or None if not found.
+    Uses v1 search endpoint which is stable for phone lookup.
     """
-    # Normalize to E.164 if not already
     normalized = _normalize_phone(phone)
-    url = f"{GHL_BASE}/contacts/"
+    url = f"{GHL_V1}/contacts/"
     params = {"locationId": settings.GHL_LOCATION_ID, "query": normalized}
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.get(url, headers=_headers(), params=params)
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.get(url, headers=_headers_v1(), params=params)
 
     if response.status_code == 200:
-        data = response.json()
-        contacts = data.get("contacts", [])
+        contacts = response.json().get("contacts", [])
         if contacts:
+            contact = contacts[0]
             logger.info(
-                "GHL contact found",
-                extra={"contact_id": contacts[0].get("id"), "phone": normalized},
+                "GHL contact found by phone",
+                extra={"contact_id": contact.get("id"), "phone": normalized},
             )
-            return contacts[0]
-        logger.info("GHL contact not found", extra={"phone": normalized})
+            return contact
+        logger.info("GHL contact not found by phone", extra={"phone": normalized})
         return None
 
     logger.warning(
-        "GHL contact lookup returned non-200",
+        "GHL phone lookup returned unexpected status",
         extra={"status": response.status_code, "phone": normalized},
     )
     return None
 
 
-async def upsert_contact(
+async def create_contact(
     phone: str,
     first_name: str = "",
     last_name: str = "",
     email: str = "",
-    custom_fields: Optional[dict[str, str]] = None,
+    source: str = "Voice Bot",
 ) -> dict[str, Any]:
     """
-    Create or update a GHL contact. Returns the full contact object.
-    GHL's v1 API upserts by phone number automatically.
+    Create a new GHL contact. Returns the full contact object.
     """
     payload: dict[str, Any] = {
         "phone": _normalize_phone(phone),
         "locationId": settings.GHL_LOCATION_ID,
+        "source": source,
+        "assignedTo": GHLUsers.DEFAULT_ASSIGNED,
     }
     if first_name:
         payload["firstName"] = first_name
@@ -117,90 +127,280 @@ async def upsert_contact(
         payload["lastName"] = last_name
     if email:
         payload["email"] = email
-    if custom_fields:
-        payload["customField"] = [
-            {"id": k, "field_value": v} for k, v in custom_fields.items()
-        ]
 
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=12) as client:
         response = await client.post(
-            f"{GHL_BASE}/contacts/", headers=_headers(), json=payload
+            f"{GHL_V1}/contacts/", headers=_headers_v1(), json=payload
         )
 
-    _raise_for_status(response, "upsert_contact")
+    _raise_for_status(response, "create_contact")
     data = response.json()
     contact = data.get("contact") or data
-    logger.info("GHL contact upserted", extra={"contact_id": contact.get("id")})
+    logger.info("GHL contact created", extra={"contact_id": contact.get("id"), "phone": phone})
     return contact
+
+
+async def lookup_or_create_contact(
+    phone: str,
+    first_name: str = "",
+    last_name: str = "",
+    email: str = "",
+) -> tuple[dict[str, Any], bool]:
+    """
+    Look up a contact by phone. If not found, create one.
+    Returns (contact_dict, is_new_contact).
+    """
+    existing = await lookup_contact_by_phone(phone)
+    if existing:
+        # Update name if we now have it and it was missing
+        if first_name and not existing.get("firstName"):
+            await update_contact(existing["id"], first_name=first_name, last_name=last_name)
+            existing["firstName"] = first_name
+            existing["lastName"] = last_name
+        return existing, False
+
+    contact = await create_contact(phone, first_name, last_name, email)
+    return contact, True
+
+
+async def update_contact(
+    contact_id: str,
+    first_name: str = "",
+    last_name: str = "",
+    email: str = "",
+) -> dict[str, Any]:
+    """Update basic fields on an existing contact."""
+    payload: dict[str, Any] = {}
+    if first_name:
+        payload["firstName"] = first_name
+    if last_name:
+        payload["lastName"] = last_name
+    if email:
+        payload["email"] = email
+
+    if not payload:
+        return {}
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.put(
+            f"{GHL_V1}/contacts/{contact_id}", headers=_headers_v1(), json=payload
+        )
+    _raise_for_status(response, "update_contact")
+    return response.json().get("contact", {})
 
 
 async def get_contact(contact_id: str) -> dict[str, Any]:
     """Fetch a contact by ID."""
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=12) as client:
         response = await client.get(
-            f"{GHL_BASE}/contacts/{contact_id}", headers=_headers()
+            f"{GHL_V1}/contacts/{contact_id}", headers=_headers_v1()
         )
     _raise_for_status(response, "get_contact")
     return response.json().get("contact", response.json())
 
 
-# ── Appointment booking ───────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Qualification Custom Fields
+# ─────────────────────────────────────────────────────────────────────────────
 
-async def book_appointment(
+async def update_qualification_fields(
     contact_id: str,
-    start_time_iso: str,
-    title: str = "Appointment",
-    calendar_id: Optional[str] = None,
-    notes: str = "",
+    insurance_status: str = "",
+    insurance_provider: str = "",
+    chief_complaint: str = "",
+    referral_source: str = "",
+    question_or_concern: str = "",
 ) -> dict[str, Any]:
     """
-    Book an appointment in GHL for the given contact.
+    Save lead qualification data to the contact's custom fields.
+    Only sends fields that have non-empty values.
 
-    Parameters
-    ----------
-    contact_id     : GHL contact ID
-    start_time_iso : ISO 8601 datetime string (e.g. "2026-04-01T14:00:00")
-    title          : Appointment title shown in GHL calendar
-    calendar_id    : Override the default calendar; falls back to GHL_CALENDAR_ID
-    notes          : Optional appointment notes
+    Maps to GHLCustomFields keys defined in config.py.
     """
-    cal_id = calendar_id or settings.GHL_CALENDAR_ID
-    if not cal_id:
-        raise GHLError("No calendar ID configured. Set GHL_CALENDAR_ID in .env.")
+    custom_fields: list[dict[str, str]] = []
 
-    payload: dict[str, Any] = {
-        "calendarId": cal_id,
-        "contactId": contact_id,
-        "startTime": start_time_iso,
-        "title": title,
-        "locationId": settings.GHL_LOCATION_ID,
-        "selectedTimezone": settings.GHL_TIMEZONE,
+    field_map = {
+        GHLCustomFields.INSURANCE_STATUS:   insurance_status,
+        GHLCustomFields.INSURANCE_PROVIDER: insurance_provider,
+        GHLCustomFields.CHIEF_COMPLAINT:    chief_complaint,
+        GHLCustomFields.REFERRAL_SOURCE:    referral_source,
+        GHLCustomFields.QUESTION_CONCERN:   question_or_concern,
     }
-    if notes:
-        payload["notes"] = notes
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(
-            f"{GHL_BASE}/appointments/", headers=_headers(), json=payload
+    for key, value in field_map.items():
+        if value:
+            custom_fields.append({"key": key, "field_value": value})
+
+    if not custom_fields:
+        logger.info("No qualification fields to update", extra={"contact_id": contact_id})
+        return {}
+
+    payload = {"customField": custom_fields}
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.put(
+            f"{GHL_V1}/contacts/{contact_id}",
+            headers=_headers_v1(),
+            json=payload,
         )
 
-    _raise_for_status(response, "book_appointment")
-    appt = response.json()
+    _raise_for_status(response, "update_qualification_fields")
     logger.info(
-        "Appointment booked",
-        extra={"contact_id": contact_id, "start_time": start_time_iso},
+        "Qualification fields updated",
+        extra={"contact_id": contact_id, "fields_updated": len(custom_fields)},
     )
-    return appt
+    return response.json().get("contact", {})
 
 
-# ── Tags ──────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Pipeline / Opportunity
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def create_opportunity(
+    contact_id: str,
+    name: str,
+    stage_id: str = GHLPipeline.Stages.NEW_LEAD,
+    monetary_value: float = 0.0,
+) -> dict[str, Any]:
+    """
+    Create a pipeline opportunity in the Voice Bot Pipeline.
+    Defaults to the 'New Lead - Voice Bot' stage.
+    """
+    payload: dict[str, Any] = {
+        "pipelineId": GHLPipeline.PIPELINE_ID,
+        "locationId": settings.GHL_LOCATION_ID,
+        "name": name,
+        "contactId": contact_id,
+        "pipelineStageId": stage_id,
+        "monetaryValue": monetary_value,
+        "status": "open",
+        "assignedTo": GHLUsers.DEFAULT_ASSIGNED,
+    }
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.post(
+            f"{GHL_V1}/opportunities/", headers=_headers_v1(), json=payload
+        )
+    _raise_for_status(response, "create_opportunity")
+    opp = response.json()
+    logger.info(
+        "Opportunity created",
+        extra={"contact_id": contact_id, "name": name, "stage_id": stage_id},
+    )
+    return opp
+
+
+async def get_opportunities_for_contact(contact_id: str) -> list[dict[str, Any]]:
+    """
+    Fetch all opportunities linked to a contact in the Voice Bot Pipeline.
+    Returns a list (may be empty).
+    """
+    params = {
+        "location_id": settings.GHL_LOCATION_ID,
+        "contact_id": contact_id,
+        "pipeline_id": GHLPipeline.PIPELINE_ID,
+    }
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.get(
+            f"{GHL_V1}/opportunities/search",
+            headers=_headers_v1(),
+            params=params,
+        )
+
+    if response.status_code == 200:
+        return response.json().get("opportunities", [])
+    logger.warning(
+        "Could not fetch opportunities for contact",
+        extra={"contact_id": contact_id, "status": response.status_code},
+    )
+    return []
+
+
+async def move_opportunity_stage(
+    opportunity_id: str,
+    stage_id: str,
+) -> dict[str, Any]:
+    """
+    Move an existing opportunity to a new pipeline stage.
+    Use GHLPipeline.Stages.* constants for stage_id.
+    """
+    payload = {"pipelineStageId": stage_id}
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.put(
+            f"{GHL_V1}/opportunities/{opportunity_id}",
+            headers=_headers_v1(),
+            json=payload,
+        )
+    _raise_for_status(response, "move_opportunity_stage")
+    logger.info(
+        "Opportunity stage moved",
+        extra={"opportunity_id": opportunity_id, "new_stage": stage_id},
+    )
+    return response.json()
+
+
+async def ensure_opportunity(
+    contact_id: str,
+    contact_name: str,
+) -> tuple[str, bool]:
+    """
+    Get the existing open opportunity for this contact, or create one.
+    Returns (opportunity_id, is_new).
+    """
+    existing = await get_opportunities_for_contact(contact_id)
+    if existing:
+        opp_id = existing[0].get("id", "")
+        logger.info("Using existing opportunity", extra={"opportunity_id": opp_id})
+        return opp_id, False
+
+    opp_name = f"Voice Bot Lead — {contact_name or 'Unknown'}"
+    opp = await create_opportunity(
+        contact_id=contact_id,
+        name=opp_name,
+        stage_id=GHLPipeline.Stages.NEW_LEAD,
+    )
+    opp_id = opp.get("opportunity", opp).get("id", "")
+    return opp_id, True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Notes
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def add_note(
+    contact_id: str,
+    body: str,
+    user_id: str = GHLUsers.DEFAULT_ASSIGNED,
+) -> dict[str, Any]:
+    """Add a note to a GHL contact's timeline."""
+    payload: dict[str, Any] = {
+        "body": body,
+        "contactId": contact_id,
+        "userId": user_id,
+    }
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.post(
+            f"{GHL_V1}/contacts/{contact_id}/notes/",
+            headers=_headers_v1(),
+            json=payload,
+        )
+    _raise_for_status(response, "add_note")
+    logger.info("Note added to contact", extra={"contact_id": contact_id})
+    return response.json()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Tags
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def add_tags(contact_id: str, tags: list[str]) -> dict[str, Any]:
     """Add one or more tags to a GHL contact."""
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=12) as client:
         response = await client.post(
-            f"{GHL_BASE}/contacts/{contact_id}/tags/",
-            headers=_headers(),
+            f"{GHL_V1}/contacts/{contact_id}/tags/",
+            headers=_headers_v1(),
             json={"tags": tags},
         )
     _raise_for_status(response, "add_tags")
@@ -210,10 +410,10 @@ async def add_tags(contact_id: str, tags: list[str]) -> dict[str, Any]:
 
 async def remove_tags(contact_id: str, tags: list[str]) -> dict[str, Any]:
     """Remove one or more tags from a GHL contact."""
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=12) as client:
         response = await client.delete(
-            f"{GHL_BASE}/contacts/{contact_id}/tags/",
-            headers=_headers(),
+            f"{GHL_V1}/contacts/{contact_id}/tags/",
+            headers=_headers_v1(),
             json={"tags": tags},
         )
     _raise_for_status(response, "remove_tags")
@@ -221,36 +421,16 @@ async def remove_tags(contact_id: str, tags: list[str]) -> dict[str, Any]:
     return response.json()
 
 
-# ── Notes ─────────────────────────────────────────────────────────────────────
-
-async def add_note(contact_id: str, body: str, user_id: str = "") -> dict[str, Any]:
-    """Add a note to a GHL contact's timeline."""
-    payload: dict[str, Any] = {"body": body, "contactId": contact_id}
-    if user_id:
-        payload["userId"] = user_id
-
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(
-            f"{GHL_BASE}/contacts/{contact_id}/notes/",
-            headers=_headers(),
-            json=payload,
-        )
-    _raise_for_status(response, "add_note")
-    logger.info("Note added", extra={"contact_id": contact_id})
-    return response.json()
-
-
-# ── SMS ───────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. SMS
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def send_sms(
     contact_id: str,
     message: str,
     from_number: str = "",
 ) -> dict[str, Any]:
-    """
-    Send an outbound SMS to a contact via GHL Conversations API.
-    `from_number` should be the GHL phone number (e.g. "+15125551234").
-    """
+    """Send an outbound SMS to a contact via GHL Conversations API."""
     payload: dict[str, Any] = {
         "type": "SMS",
         "contactId": contact_id,
@@ -259,10 +439,10 @@ async def send_sms(
     if from_number:
         payload["fromNumber"] = from_number
 
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=12) as client:
         response = await client.post(
-            f"{GHL_BASE}/conversations/messages/outbound",
-            headers=_headers(),
+            f"{GHL_V1}/conversations/messages/outbound",
+            headers=_headers_v1(),
             json=payload,
         )
     _raise_for_status(response, "send_sms")
@@ -270,41 +450,9 @@ async def send_sms(
     return response.json()
 
 
-# ── Pipeline / Opportunity ────────────────────────────────────────────────────
-
-async def create_opportunity(
-    contact_id: str,
-    name: str,
-    pipeline_id: Optional[str] = None,
-    stage_id: str = "",
-    monetary_value: float = 0.0,
-) -> dict[str, Any]:
-    """Create a pipeline opportunity linked to a contact."""
-    pid = pipeline_id or settings.GHL_PIPELINE_ID
-    if not pid:
-        raise GHLError("No pipeline ID configured. Set GHL_PIPELINE_ID in .env.")
-
-    payload: dict[str, Any] = {
-        "pipelineId": pid,
-        "locationId": settings.GHL_LOCATION_ID,
-        "name": name,
-        "contactId": contact_id,
-        "monetaryValue": monetary_value,
-        "status": "open",
-    }
-    if stage_id:
-        payload["pipelineStageId"] = stage_id
-
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(
-            f"{GHL_BASE}/opportunities/", headers=_headers(), json=payload
-        )
-    _raise_for_status(response, "create_opportunity")
-    logger.info("Opportunity created", extra={"contact_id": contact_id, "name": name})
-    return response.json()
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _normalize_phone(phone: str) -> str:
     """Strip non-digit characters and ensure E.164 format (+1XXXXXXXXXX)."""
@@ -313,4 +461,4 @@ def _normalize_phone(phone: str) -> str:
         return f"+1{digits}"
     if len(digits) == 11 and digits.startswith("1"):
         return f"+{digits}"
-    return f"+{digits}"
+    return f"+{digits}" if digits else phone
