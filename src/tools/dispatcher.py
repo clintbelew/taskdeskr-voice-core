@@ -1,16 +1,21 @@
 """
-TaskDeskr Voice Core — Tool Dispatcher
-=========================================
-Receives tool call requests from the LLM and executes the corresponding
-GoHighLevel (or system) action.
+TaskDeskr Voice Core — Phase 1 Tool Dispatcher
+===============================================
+Executes tool calls requested by the LLM during a live Vapi conversation.
 
 Each handler:
-  - Accepts parsed arguments from the LLM
-  - Executes the appropriate service call
-  - Returns a result dict that is fed back to the LLM as a tool result message
-  - Logs success/failure with call context
+  - Receives the parsed arguments from the LLM
+  - Reads call state (contact_id, opportunity_id, etc.) from the call store
+  - Executes the appropriate GHL API operation(s)
+  - Returns a result string the LLM reads or uses to continue reasoning
+  - Never raises — all errors are caught and returned as graceful messages
 
-The dispatcher is the bridge between the AI's intent and the real world.
+Tool handlers (Phase 1):
+  save_caller_info        → update contact name/email in GHL + tag
+  save_qualification_data → write custom fields to GHL contact
+  create_lead_opportunity → create opportunity in Voice Bot Pipeline
+  send_booking_link       → move opportunity to Booking Link Sent stage
+  end_call                → signal Vapi to end the call
 """
 
 from __future__ import annotations
@@ -18,15 +23,11 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from src.core.config import settings
+from src.core.config import GHLPipeline
 from src.core.logger import get_logger
 from src.services import ghl
 
 logger = get_logger(__name__)
-
-
-class ToolError(Exception):
-    """Raised when a tool execution fails."""
 
 
 async def dispatch(
@@ -34,214 +35,237 @@ async def dispatch(
     arguments_json: str,
     contact_id: Optional[str],
     phone: Optional[str] = None,
+    call_state: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """
-    Execute a tool requested by the LLM.
+    Route a tool call from the LLM to the correct handler.
 
     Parameters
     ----------
-    tool_name       : Name of the tool (matches a key in TOOL_DEFINITIONS)
+    tool_name       : Name of the tool as defined in definitions.py
     arguments_json  : JSON string of arguments from the LLM
-    contact_id      : GHL contact ID for the current caller (may be None)
-    phone           : Caller's phone number (used if contact_id is missing)
+    contact_id      : GHL contact ID for the current caller
+    phone           : Caller phone number (fallback if contact_id missing)
+    call_state      : Mutable dict holding call-scoped data
 
     Returns
     -------
-    Result dict to be returned to the LLM as a tool result.
-    Always returns a dict — never raises, so the LLM can handle failures gracefully.
+    dict with keys:
+      result  : str  — message the LLM receives as the tool result
+      action  : dict — optional Vapi action (e.g. {"type": "end-call"})
     """
+    if call_state is None:
+        call_state = {}
+
     try:
         args = json.loads(arguments_json) if arguments_json else {}
     except json.JSONDecodeError:
-        logger.error("Invalid tool arguments JSON", extra={"tool": tool_name, "raw": arguments_json})
-        return {"success": False, "error": "Invalid arguments format."}
+        logger.error("Invalid tool arguments JSON", extra={"tool": tool_name})
+        return {"result": "I had trouble reading that request. Please continue."}
 
     logger.info("Dispatching tool", extra={"tool": tool_name, "contact_id": contact_id})
 
-    # Ensure we have a contact before attempting CRM operations
-    if tool_name not in ("escalate_to_human", "end_call") and not contact_id and phone:
-        contact_id = await _ensure_contact(phone)
+    # Auto-resolve contact if we have a phone but no contact_id yet
+    if not contact_id and phone and tool_name not in ("end_call",):
+        contact_id = await _resolve_contact_id(phone)
+        if contact_id:
+            call_state["contact_id"] = contact_id
+
+    # Inject resolved contact_id into call_state for handlers
+    if contact_id and not call_state.get("contact_id"):
+        call_state["contact_id"] = contact_id
+
+    handlers = {
+        "save_caller_info":        _handle_save_caller_info,
+        "save_qualification_data": _handle_save_qualification_data,
+        "create_lead_opportunity": _handle_create_lead_opportunity,
+        "send_booking_link":       _handle_send_booking_link,
+        "end_call":                _handle_end_call,
+    }
+
+    handler = handlers.get(tool_name)
+    if not handler:
+        logger.warning("Unknown tool called", extra={"tool": tool_name})
+        return {"result": f"I don't know how to handle '{tool_name}'. Continuing the conversation."}
 
     try:
-        if tool_name == "book_appointment":
-            return await _handle_book_appointment(args, contact_id)
-
-        elif tool_name == "add_contact_tag":
-            return await _handle_add_tag(args, contact_id)
-
-        elif tool_name == "remove_contact_tag":
-            return await _handle_remove_tag(args, contact_id)
-
-        elif tool_name == "add_contact_note":
-            return await _handle_add_note(args, contact_id)
-
-        elif tool_name == "send_sms":
-            return await _handle_send_sms(args, contact_id)
-
-        elif tool_name == "escalate_to_human":
-            return await _handle_escalate(args)
-
-        elif tool_name == "end_call":
-            return _handle_end_call(args)
-
-        elif tool_name == "create_opportunity":
-            return await _handle_create_opportunity(args, contact_id)
-
-        else:
-            logger.warning("Unknown tool requested", extra={"tool": tool_name})
-            return {"success": False, "error": f"Unknown tool: {tool_name}"}
-
+        return await handler(args, call_state)
     except ghl.GHLError as exc:
         logger.error(
-            "GHL error during tool execution",
+            "GHL error in tool handler",
             extra={"tool": tool_name, "error": str(exc), "status": exc.status_code},
         )
-        return {"success": False, "error": f"CRM action failed: {exc}"}
-
-    except Exception as exc:
-        logger.error(
-            "Unexpected error during tool execution",
-            extra={"tool": tool_name, "error": str(exc)},
-            exc_info=True,
-        )
-        return {"success": False, "error": "An unexpected error occurred. Please try again."}
-
-
-# ── Individual tool handlers ──────────────────────────────────────────────────
-
-async def _handle_book_appointment(
-    args: dict[str, Any], contact_id: Optional[str]
-) -> dict[str, Any]:
-    if not contact_id:
-        return {"success": False, "error": "Cannot book appointment: caller not found in CRM."}
-
-    start_time = args.get("start_time", "")
-    if not start_time:
-        return {"success": False, "error": "start_time is required to book an appointment."}
-
-    appt = await ghl.book_appointment(
-        contact_id=contact_id,
-        start_time_iso=start_time,
-        title=args.get("title", "Appointment"),
-        calendar_id=args.get("calendar_id") or None,
-        notes=args.get("notes", ""),
-    )
-    return {
-        "success": True,
-        "message": f"Appointment booked for {start_time}.",
-        "appointment_id": appt.get("id"),
-    }
-
-
-async def _handle_add_tag(
-    args: dict[str, Any], contact_id: Optional[str]
-) -> dict[str, Any]:
-    if not contact_id:
-        return {"success": False, "error": "Cannot add tag: caller not found in CRM."}
-    tags = args.get("tags", [])
-    if not tags:
-        return {"success": False, "error": "No tags provided."}
-    await ghl.add_tags(contact_id=contact_id, tags=tags)
-    return {"success": True, "message": f"Tags added: {', '.join(tags)}."}
-
-
-async def _handle_remove_tag(
-    args: dict[str, Any], contact_id: Optional[str]
-) -> dict[str, Any]:
-    if not contact_id:
-        return {"success": False, "error": "Cannot remove tag: caller not found in CRM."}
-    tags = args.get("tags", [])
-    if not tags:
-        return {"success": False, "error": "No tags provided."}
-    await ghl.remove_tags(contact_id=contact_id, tags=tags)
-    return {"success": True, "message": f"Tags removed: {', '.join(tags)}."}
-
-
-async def _handle_add_note(
-    args: dict[str, Any], contact_id: Optional[str]
-) -> dict[str, Any]:
-    if not contact_id:
-        return {"success": False, "error": "Cannot add note: caller not found in CRM."}
-    note_text = args.get("note", "").strip()
-    if not note_text:
-        return {"success": False, "error": "Note text is empty."}
-    await ghl.add_note(contact_id=contact_id, body=note_text)
-    return {"success": True, "message": "Note added to contact record."}
-
-
-async def _handle_send_sms(
-    args: dict[str, Any], contact_id: Optional[str]
-) -> dict[str, Any]:
-    if not contact_id:
-        return {"success": False, "error": "Cannot send SMS: caller not found in CRM."}
-    message = args.get("message", "").strip()
-    if not message:
-        return {"success": False, "error": "SMS message is empty."}
-    await ghl.send_sms(contact_id=contact_id, message=message)
-    return {"success": True, "message": "SMS sent successfully."}
-
-
-async def _handle_escalate(args: dict[str, Any]) -> dict[str, Any]:
-    reason = args.get("reason", "Caller requested human assistance.")
-    transfer_number = settings.ESCALATION_PHONE_NUMBER
-    if not transfer_number:
-        logger.warning("Escalation requested but ESCALATION_PHONE_NUMBER is not set.")
         return {
-            "success": False,
-            "error": "Escalation phone number not configured.",
-            "action": "escalate",
+            "result": (
+                "I wasn't able to save that information right now, but I've noted it. "
+                "Please continue."
+            )
         }
-    logger.info("Escalating call to human", extra={"reason": reason, "transfer_to": transfer_number})
-    return {
-        "success": True,
-        "action": "transfer",
-        "transfer_to": transfer_number,
-        "reason": reason,
-        "message": "Transferring you to a team member now. Please hold.",
-    }
+    except Exception:
+        logger.exception("Unexpected error in tool handler", extra={"tool": tool_name})
+        return {"result": "Something went wrong on my end. Let me continue helping you."}
 
 
-def _handle_end_call(args: dict[str, Any]) -> dict[str, Any]:
-    farewell = args.get("farewell_message", "Thank you for calling. Have a great day!")
-    return {
-        "success": True,
-        "action": "end_call",
-        "farewell_message": farewell,
-    }
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool Handlers
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-async def _handle_create_opportunity(
-    args: dict[str, Any], contact_id: Optional[str]
+async def _handle_save_caller_info(
+    args: dict[str, Any],
+    call_state: dict[str, Any],
 ) -> dict[str, Any]:
+    """Update the contact's name and email in GHL. Tag as voice-bot-lead."""
+    contact_id = call_state.get("contact_id")
     if not contact_id:
-        return {"success": False, "error": "Cannot create opportunity: caller not found in CRM."}
-    name = args.get("name", "").strip()
-    if not name:
-        return {"success": False, "error": "Opportunity name is required."}
-    opp = await ghl.create_opportunity(
+        return {"result": "I'll note your name for the summary."}
+
+    first_name = args.get("first_name", "")
+    last_name  = args.get("last_name", "")
+    email      = args.get("email", "")
+
+    await ghl.update_contact(contact_id, first_name=first_name, last_name=last_name, email=email)
+
+    # Mirror in call state for the end-of-call summary
+    call_state["caller_first_name"] = first_name
+    call_state["caller_last_name"]  = last_name
+    if email:
+        call_state["caller_email"] = email
+
+    # Tag as voice-bot-lead (GHL ignores duplicate tags)
+    await ghl.add_tags(contact_id, ["voice-bot-lead"])
+
+    logger.info("Caller info saved", extra={"contact_id": contact_id, "first_name": first_name})
+    return {"result": f"Got it — I've saved {first_name}'s information."}
+
+
+async def _handle_save_qualification_data(
+    args: dict[str, Any],
+    call_state: dict[str, Any],
+) -> dict[str, Any]:
+    """Write qualification custom fields to the GHL contact."""
+    contact_id = call_state.get("contact_id")
+    if not contact_id:
+        return {"result": "I've noted the information for the call summary."}
+
+    await ghl.update_qualification_fields(
         contact_id=contact_id,
-        name=name,
-        monetary_value=float(args.get("monetary_value", 0)),
-        stage_id=args.get("stage_id", ""),
+        insurance_status=args.get("insurance_status", ""),
+        insurance_provider=args.get("insurance_provider", ""),
+        chief_complaint=args.get("chief_complaint", ""),
+        referral_source=args.get("referral_source", ""),
+        question_or_concern=args.get("question_or_concern", ""),
     )
+
+    # Mirror in call state for summary
+    call_state.setdefault("qualification", {}).update(
+        {k: v for k, v in args.items() if v}
+    )
+
+    logger.info("Qualification data saved", extra={"contact_id": contact_id})
+    return {"result": "Qualification information saved."}
+
+
+async def _handle_create_lead_opportunity(
+    args: dict[str, Any],
+    call_state: dict[str, Any],
+) -> dict[str, Any]:
+    """Create an opportunity in the Voice Bot Pipeline at the New Lead stage."""
+    contact_id = call_state.get("contact_id")
+    if not contact_id:
+        return {"result": "Unable to create opportunity — contact not found."}
+
+    # Prevent duplicate opportunities per call
+    if call_state.get("opportunity_id"):
+        return {"result": "Lead opportunity already created for this caller."}
+
+    opp_name = args.get("opportunity_name") or (
+        f"Voice Bot Lead — "
+        f"{call_state.get('caller_first_name', 'Unknown')} "
+        f"{call_state.get('caller_last_name', '')}".strip()
+    )
+
+    opp_id, is_new = await ghl.ensure_opportunity(
+        contact_id=contact_id,
+        contact_name=opp_name,
+    )
+
+    call_state["opportunity_id"]   = opp_id
+    call_state["opportunity_name"] = opp_name
+
+    logger.info("Lead opportunity ready", extra={"opportunity_id": opp_id, "is_new": is_new})
+
     return {
-        "success": True,
-        "message": f"Opportunity '{name}' created.",
-        "opportunity_id": opp.get("id"),
+        "result": (
+            "Lead opportunity created in the Voice Bot Pipeline."
+            if is_new else
+            "Existing opportunity linked."
+        )
     }
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+async def _handle_send_booking_link(
+    args: dict[str, Any],
+    call_state: dict[str, Any],
+) -> dict[str, Any]:
+    """Move the opportunity to 'Booking Link Sent' stage."""
+    contact_id     = call_state.get("contact_id")
+    opportunity_id = call_state.get("opportunity_id")
 
-async def _ensure_contact(phone: str) -> Optional[str]:
+    # Create opportunity first if it doesn't exist yet
+    if not opportunity_id and contact_id:
+        contact_name = (
+            f"{call_state.get('caller_first_name', '')} "
+            f"{call_state.get('caller_last_name', '')}".strip() or "Unknown"
+        )
+        opp_id, _ = await ghl.ensure_opportunity(contact_id, contact_name)
+        opportunity_id = opp_id
+        call_state["opportunity_id"] = opp_id
+
+    if opportunity_id:
+        await ghl.move_opportunity_stage(
+            opportunity_id=opportunity_id,
+            stage_id=GHLPipeline.Stages.BOOKING_LINK_SENT,
+        )
+        call_state["pipeline_stage"]         = "booking_link_sent"
+        call_state["booking_link_requested"] = True
+
+    interest = args.get("caller_interest_level", "medium")
+    logger.info("Booking link stage set", extra={"opportunity_id": opportunity_id, "interest": interest})
+
+    return {
+        "result": (
+            "Pipeline stage moved to 'Booking Link Sent'. "
+            "The team will send a scheduling link to the caller."
+        )
+    }
+
+
+async def _handle_end_call(
+    args: dict[str, Any],
+    call_state: dict[str, Any],
+) -> dict[str, Any]:
+    """Signal Vapi to end the call."""
+    reason = args.get("reason", "completed")
+    call_state["end_reason"] = reason
+    logger.info("End call requested by LLM", extra={"reason": reason})
+    return {
+        "result": "Thank you for calling TaskDeskr. Have a great day!",
+        "action": {"type": "end-call"},
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _resolve_contact_id(phone: str) -> Optional[str]:
     """Look up or create a contact by phone and return the contact ID."""
     try:
         contact = await ghl.lookup_contact_by_phone(phone)
         if contact:
             return contact.get("id")
-        # Auto-create a minimal contact record for unknown callers
-        new_contact = await ghl.upsert_contact(phone=phone)
+        new_contact = await ghl.create_contact(phone=phone)
         return new_contact.get("id")
     except ghl.GHLError as exc:
-        logger.error("Failed to ensure contact", extra={"phone": phone, "error": str(exc)})
+        logger.error("Failed to resolve contact", extra={"phone": phone, "error": str(exc)})
         return None
