@@ -39,9 +39,9 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = Field(..., description="OpenAI API key")
     ANTHROPIC_API_KEY: str = Field(default="", description="Anthropic Claude API key")
 
-    DEFAULT_LLM_PROVIDER: Literal["openai", "anthropic", "auto"] = "openai"
+    DEFAULT_LLM_PROVIDER: Literal["openai", "anthropic", "auto"] = "anthropic"
     OPENAI_MODEL: str = "gpt-4.1-mini"
-    ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20241022"
+    ANTHROPIC_MODEL: str = "claude-opus-4-5"
 
     # ── GoHighLevel ───────────────────────────────────────────────────────────
     GHL_API_KEY: str = Field(..., description="GoHighLevel Bearer token (v2 Private Integration Key)")
