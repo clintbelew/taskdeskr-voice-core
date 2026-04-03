@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from src.core.config import settings
 from src.core.logger import get_logger
 from src.services import ghl
 
@@ -161,7 +162,7 @@ def build_assistant_config(system_prompt: str, tools: list[dict]) -> dict[str, A
         "name": "Aria — TaskDeskr AI Front Desk",
         "model": {
             "provider": "openai",
-            "model": "gpt-4o-mini",
+            "model": settings.OPENAI_MODEL,
             "messages": [
                 {"role": "system", "content": system_prompt}
             ],

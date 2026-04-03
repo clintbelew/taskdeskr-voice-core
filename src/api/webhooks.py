@@ -56,7 +56,7 @@ def verify_vapi_signature(payload_bytes: bytes, signature_header: str) -> bool:
         return True
 
     expected = hmac.new(
-        secret.encode(), payload_bytes, hashlib.sha256
+        secret.encode(), payload_bytes, digestmod=hashlib.sha256
     ).hexdigest()
     return hmac.compare_digest(expected, signature_header or "")
 
@@ -159,7 +159,7 @@ async def _handle_assistant_request(
             "name": "Aria — TaskDeskr AI Front Desk",
             "model": {
                 "provider": "openai",
-                "model": "gpt-4o-mini",
+                "model": settings.OPENAI_MODEL,
                 "systemPrompt": system_prompt,
                 "tools": TOOL_DEFINITIONS,
                 "temperature": 0.4,

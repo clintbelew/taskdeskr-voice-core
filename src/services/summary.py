@@ -106,12 +106,14 @@ async def generate_and_save_summary(
 
     logger.info("Generating call summary", extra={"call_id": call_id})
 
+    # Force openai for summarization — prevents auto-routing to Anthropic
+    # when ANTHROPIC_API_KEY is not configured (Phase 1 default)
     result = await router.complete(
         messages=transcript,
         system_prompt=_SUMMARY_SYSTEM,
         tools=[_SUMMARY_TOOL],
         task_type="summarize",
-        provider_override=provider_override,
+        provider_override=provider_override or "openai",
         temperature=0.1,
         max_tokens=1024,
     )

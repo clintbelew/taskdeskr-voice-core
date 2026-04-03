@@ -57,7 +57,7 @@ class GHLError(Exception):
 
 
 def _raise_for_status(response: httpx.Response, context: str) -> None:
-    if response.status_code not in (200, 201):
+    if response.status_code not in (200, 201, 204):
         logger.error(
             f"GHL API error in {context}",
             extra={"status": response.status_code, "body": response.text[:500]},
