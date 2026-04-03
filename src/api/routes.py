@@ -103,6 +103,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
         response = await handle_vapi_event(payload)
+        return JSONResponse(content=response)
 
     @app.get("/debug/ghl", tags=["Debug"])
     async def debug_ghl():
