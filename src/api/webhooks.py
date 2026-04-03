@@ -151,7 +151,7 @@ async def _handle_assistant_request(
             "name": "Aria — TaskDeskr AI Front Desk",
             "model": {
                 "provider": "anthropic",
-                "model": "claude-opus-4-5-20251101",  # Full versioned name required by Vapi
+                "model": "claude-opus-4-20250514",  # Vapi-supported model string (verified against AnthropicModelModel enum)
                 "systemPrompt": system_prompt,
                 "tools": TOOL_DEFINITIONS,
                 "temperature": 0.4,

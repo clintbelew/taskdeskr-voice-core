@@ -105,27 +105,4 @@ def create_app() -> FastAPI:
         response = await handle_vapi_event(payload)
         return JSONResponse(content=response)
 
-    @app.get("/debug/ghl", tags=["Debug"])
-    async def debug_ghl():
-        """Temporary debug endpoint — shows GHL key prefix to verify env var."""
-        import httpx
-        key = settings.GHL_API_KEY
-        # Test the key against GHL
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(
-                    "https://services.leadconnectorhq.com/contacts/",
-                    headers={"Authorization": f"Bearer {key}", "Version": "2021-07-28"},
-                    params={"locationId": settings.GHL_LOCATION_ID, "limit": 1}
-                )
-            ghl_status = r.status_code
-        except Exception as e:
-            ghl_status = f"error: {e}"
-        return {
-            "ghl_key_prefix": key[:25] if key else "EMPTY",
-            "ghl_key_length": len(key),
-            "ghl_api_status": ghl_status,
-            "location_id": settings.GHL_LOCATION_ID,
-        }
-
     return app

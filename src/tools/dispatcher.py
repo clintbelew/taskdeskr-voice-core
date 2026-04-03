@@ -203,13 +203,18 @@ async def _handle_create_lead_opportunity(
     }
 
 
+# Booking link URL — the GHL calendar booking page for new patients
+_BOOKING_LINK_URL = "https://api.leadconnectorhq.com/widget/booking/AewaSaTHTTYUBFqFJ9Yg"
+
+
 async def _handle_send_booking_link(
     args: dict[str, Any],
     call_state: dict[str, Any],
 ) -> dict[str, Any]:
-    """Move the opportunity to 'Booking Link Sent' stage."""
+    """Move the opportunity to 'Booking Link Sent' stage AND send the booking link via SMS."""
     contact_id     = call_state.get("contact_id")
     opportunity_id = call_state.get("opportunity_id")
+    phone          = call_state.get("phone", "")
 
     # Create opportunity first if it doesn't exist yet
     if not opportunity_id and contact_id:
@@ -229,13 +234,42 @@ async def _handle_send_booking_link(
         call_state["pipeline_stage"]         = "booking_link_sent"
         call_state["booking_link_requested"] = True
 
-    interest = args.get("caller_interest_level", "medium")
-    logger.info("Booking link stage set", extra={"opportunity_id": opportunity_id, "interest": interest})
+    # Send the actual booking link via SMS
+    sms_sent = False
+    if contact_id:
+        first_name = call_state.get("caller_first_name", "").strip()
+        greeting   = f"Hi {first_name}, " if first_name else "Hi, "
+        sms_body   = (
+            f"{greeting}here's your scheduling link to book your appointment with TaskDeskr: "
+            f"{_BOOKING_LINK_URL} — Reply STOP to opt out."
+        )
+        try:
+            await ghl.send_sms(contact_id=contact_id, message=sms_body)
+            sms_sent = True
+            logger.info(
+                "Booking link SMS sent",
+                extra={"contact_id": contact_id, "phone": phone},
+            )
+        except ghl.GHLError as exc:
+            logger.error(
+                "Failed to send booking link SMS",
+                extra={"contact_id": contact_id, "error": str(exc)},
+            )
 
+    interest = args.get("caller_interest_level", "medium")
+    logger.info("Booking link stage set", extra={"opportunity_id": opportunity_id, "interest": interest, "sms_sent": sms_sent})
+
+    if sms_sent:
+        return {
+            "result": (
+                "Booking link sent via text message and pipeline stage moved to 'Booking Link Sent'. "
+                "Tell the caller the scheduling link has been sent to their phone."
+            )
+        }
     return {
         "result": (
             "Pipeline stage moved to 'Booking Link Sent'. "
-            "The team will send a scheduling link to the caller."
+            "SMS could not be sent — the team will follow up with a scheduling link."
         )
     }
 
