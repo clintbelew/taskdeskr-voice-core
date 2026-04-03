@@ -6,6 +6,7 @@ services:
     name: taskdeskr-voice-core
     runtime: python
     region: oregon
+    pythonVersion: "3.11.0"
     plan: starter
 
     buildCommand: pip install -r requirements.txt
