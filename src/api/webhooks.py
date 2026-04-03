@@ -236,9 +236,26 @@ async def _handle_function_call(
 
     # Get the mutable call state — pass it to the dispatcher so handlers
     # can read and write contact_id, opportunity_id, etc.
-    state = _call_state.get(call_id, {})
+    state = _call_state.get(call_id)
+    if state is None:
+        # Pre-built assistant: no assistant-request or call-started fired yet.
+        # Initialize state from the message's call object so we can resolve the contact.
+        call_obj = message.get("call", {})
+        phone_from_call = _extract_phone(call_obj)
+        state = {"phone": phone_from_call, "contact_id": None, "messages": []}
+        _call_state[call_id] = state
+        logger.info(
+            "Initialized call state from function-call event",
+            extra={"call_id": call_id, "phone": phone_from_call},
+        )
+    elif not state.get("phone"):
+        # State exists but phone is missing — extract from message
+        call_obj = message.get("call", {})
+        phone_from_call = _extract_phone(call_obj)
+        if phone_from_call:
+            state["phone"] = phone_from_call
 
-    logger.info("Executing tool call", extra={"tool": tool_name})
+    logger.info("Executing tool call", extra={"tool": tool_name, "phone": state.get("phone")})
 
     result = await dispatcher.dispatch(
         tool_name=tool_name,
