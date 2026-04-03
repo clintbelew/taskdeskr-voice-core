@@ -280,6 +280,25 @@ async def _handle_end_of_call(
     contact    = state.get("contact") or {}
     contact_id = state.get("contact_id") or contact.get("id")
 
+    # If no contact_id in state (e.g. pre-built assistant, no assistant-request fired),
+    # look up or create the contact from the caller's phone number now.
+    if not contact_id:
+        call_obj = message.get("call", {})
+        phone = _extract_phone(call_obj) or state.get("phone")
+        if phone:
+            logger.info("No contact in state — looking up/creating GHL contact", extra={"phone": phone})
+            try:
+                from src.services import ghl as ghl_svc
+                contact = await ghl_svc.lookup_contact_by_phone(phone)
+                if not contact:
+                    # Create a new contact with just the phone number
+                    contact = await ghl_svc.create_contact(phone=phone)
+                if contact:
+                    contact_id = contact.get("id")
+                    logger.info("GHL contact resolved", extra={"contact_id": contact_id})
+            except Exception as exc:
+                logger.error("Failed to resolve GHL contact", extra={"error": str(exc)})
+
     # Build transcript from Vapi's artifact
     artifact        = message.get("artifact", {})
     raw_transcript  = artifact.get("transcript", "")

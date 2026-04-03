@@ -18,7 +18,7 @@ from typing import Optional
 
 from src.core.config import settings
 from src.core.logger import get_logger
-from src.api.webhooks import handle_vapi_event, verify_vapi_signature
+from src.api.webhooks import handle_vapi_event
 
 logger = get_logger(__name__)
 
@@ -63,7 +63,7 @@ def create_app() -> FastAPI:
     @app.post("/vapi/webhook", tags=["Vapi"])
     async def vapi_webhook(
         request: Request,
-        x_vapi_signature: Optional[str] = Header(default=None),
+        x_vapi_secret: Optional[str] = Header(default=None),
     ):
         """
         Main Vapi webhook endpoint.
@@ -78,14 +78,23 @@ def create_app() -> FastAPI:
 
         Configure this URL in your Vapi dashboard under:
         Dashboard → Phone Numbers → Server URL  (or Assistant → Server URL)
+
+        Vapi authenticates by sending the secret as a plain-text value in the
+        X-Vapi-Secret header (not HMAC). We do a constant-time comparison.
         """
         raw_body = await request.body()
 
-        # Verify webhook signature if secret is configured
+        # Verify webhook secret if configured (Vapi sends X-Vapi-Secret header)
         if settings.VAPI_WEBHOOK_SECRET:
-            if not verify_vapi_signature(raw_body, x_vapi_signature or ""):
-                logger.warning("Invalid Vapi webhook signature — rejecting request")
-                raise HTTPException(status_code=401, detail="Invalid webhook signature")
+            import hmac as _hmac
+            received = (x_vapi_secret or "").encode()
+            expected = settings.VAPI_WEBHOOK_SECRET.encode()
+            if not _hmac.compare_digest(received, expected):
+                logger.warning(
+                    "Invalid Vapi webhook secret — rejecting request",
+                    extra={"received_header": bool(x_vapi_secret)}
+                )
+                raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
         try:
             payload = await request.json()
