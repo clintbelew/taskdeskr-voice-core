@@ -87,19 +87,20 @@ class GHLCalendars:
 
 class GHLCustomFields:
     """
-    Custom field keys for contact qualification.
-    Use these as the 'key' parameter in GHL API PATCH calls.
+    Custom field IDs for contact qualification.
+    These are the actual GHL field IDs (not keys) required by the v2 API.
+    Verified against location BsrmNxNTZZ6OsEosQFuo on 2026-04-03.
     """
-    # Standard intake fields
-    INSURANCE_STATUS   = "contact.do_you_have_health_insurance"
-    INSURANCE_PROVIDER = "contact.insurance_provider"
-    INSURANCE_PHONE    = "contact.insurance_phone"
-    MEMBER_ID          = "contact.member_id"
-    GROUP_NUMBER       = "contact.group_number"
-    CHIEF_COMPLAINT    = "contact.briefly_list_your_chief_compliant_or_symptom_s"
-    REFERRAL_SOURCE    = "contact.how_did_you_hear_about_our_office"
-    QUESTION_CONCERN   = "contact.question_or_concern"
-    VISIT_COUNT        = "contact.appointment_visit_count"
+    # Standard intake fields — use field ID (not fieldKey) in API calls
+    INSURANCE_STATUS   = "hNpVIDD7mqZSL6daaR4t"   # Do you have health insurance?
+    INSURANCE_PROVIDER = "Wv9qtchGAUaiqgx70M7B"   # Insurance Provider
+    INSURANCE_PHONE    = "pf20Eb3VyVvqZJTGZp2o"   # Insurance Phone #
+    MEMBER_ID          = "fGkhFB7oMPSrxfqcw9fm"   # Member ID
+    GROUP_NUMBER       = "g9Cd7I7k3YtBX1mqpi21"   # Group Number
+    CHIEF_COMPLAINT    = "fkS6unsGraaWIrutNmK9"   # Briefly list your chief complaint
+    REFERRAL_SOURCE    = "D1cru9E5LnnYRnNSBpLr"   # How did you hear about our office?
+    QUESTION_CONCERN   = "HnWxcFdqIZ7TyJ7goJzA"   # Question or Concern
+    VISIT_COUNT        = "n2oJQBmTn7xo6ja7aZYe"   # Appointment Visit Count
 
 
 class GHLUsers:
