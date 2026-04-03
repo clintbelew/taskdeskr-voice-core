@@ -329,13 +329,18 @@ async def _handle_end_of_call(
     vapi_messages  = artifact.get("messages", [])
 
     if vapi_messages:
+        # Vapi messages can have roles: "user", "bot", "tool_call", "tool_result", "system"
+        # Anthropic only accepts "user" and "assistant" roles in the messages array.
+        # Map "bot" -> "assistant"; skip "tool_call", "tool_result", "system" roles.
+        _ROLE_MAP = {"user": "user", "bot": "assistant", "assistant": "assistant"}
         transcript = [
             {
-                "role":    m.get("role", "user"),
+                "role":    _ROLE_MAP[m.get("role", "user")],
                 "content": m.get("message") or m.get("content") or "",
             }
             for m in vapi_messages
-            if m.get("message") or m.get("content")
+            if (m.get("message") or m.get("content"))
+            and m.get("role") in _ROLE_MAP
         ]
     elif raw_transcript:
         transcript = [{"role": "user", "content": raw_transcript}]

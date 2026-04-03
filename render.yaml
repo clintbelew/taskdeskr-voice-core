@@ -28,7 +28,7 @@ services:
       - key: OPENAI_MODEL
         value: "gpt-4.1-mini"
       - key: ANTHROPIC_MODEL
-        value: "claude-3-5-sonnet-20241022"
+        value: "claude-opus-4-5-20251101"
       - key: VAPI_WEBHOOK_SECRET
         sync: false
       - key: GHL_API_KEY
