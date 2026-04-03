@@ -186,6 +186,7 @@ async def _complete_anthropic(
         kwargs["system"] = system_prompt
     if anthropic_tools:
         kwargs["tools"] = anthropic_tools
+        kwargs["tool_choice"] = {"type": "any"}  # Force Claude to use a tool
 
     response = await _anthropic().messages.create(**kwargs)
 

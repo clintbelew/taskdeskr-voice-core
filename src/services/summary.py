@@ -76,8 +76,17 @@ _SUMMARY_TOOL = {
     },
 }
 
-_SUMMARY_SYSTEM = """You are a call analyst. Given a voice call transcript, extract a structured summary.
-Be factual and concise. Do not infer information not present in the transcript."""
+_SUMMARY_SYSTEM = """You are a call analyst. Given a voice call transcript, you MUST call the submit_call_summary tool with a structured summary.
+
+Extract:
+- outcome: what happened (appointment_booked, information_provided, no_action, etc.)
+- topics: key topics discussed (e.g. back pain, insurance, scheduling)
+- actions_taken: what was done (e.g. sent booking link, collected insurance info)
+- follow_up: any pending tasks for the team
+- sentiment: caller's mood (positive, neutral, negative, frustrated)
+- summary_text: one paragraph describing the call
+
+Be factual and concise. Only use information present in the transcript. You MUST call the tool."""
 
 
 async def generate_and_save_summary(
