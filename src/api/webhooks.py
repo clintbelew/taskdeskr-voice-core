@@ -6,9 +6,10 @@ Processes all inbound webhook events from Vapi.
 Vapi sends events to your server URL for:
   - assistant-request   : Vapi needs to know which assistant config to use
   - call-started        : A new call has begun
-  - transcript          : Real-time transcript chunks (optional)
+  - transcript          : Real-time transcript chunks
   - function-call       : LLM has requested a tool execution
   - end-of-call-report  : Call has ended, full transcript available
+  - hang                : Caller hung up
 
 Each handler is a pure async function that receives the parsed payload
 and returns a response dict (serialized to JSON by the route layer).
@@ -20,11 +21,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from typing import Any, Optional
 
 from src.core.config import settings
 from src.core.logger import get_logger, set_call_context, clear_call_context
-from src.core import router
 from src.services import context as ctx_service
 from src.services import summary as summary_service
 from src.tools import dispatcher
@@ -32,12 +33,17 @@ from src.tools.definitions import TOOL_DEFINITIONS
 
 logger = get_logger(__name__)
 
-# In-memory call state store (replace with Redis for multi-instance deployments)
-# Maps call_id → {system_prompt, contact, transcript, messages}
+# ─────────────────────────────────────────────────────────────────────────────
+# In-memory call state store
+# Maps call_id → mutable state dict shared across all handlers for that call
+# Replace with Redis for multi-instance / multi-worker deployments
+# ─────────────────────────────────────────────────────────────────────────────
 _call_state: dict[str, dict[str, Any]] = {}
 
 
-# ── Signature verification ────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Signature verification
+# ─────────────────────────────────────────────────────────────────────────────
 
 def verify_vapi_signature(payload_bytes: bytes, signature_header: str) -> bool:
     """
@@ -55,20 +61,20 @@ def verify_vapi_signature(payload_bytes: bytes, signature_header: str) -> bool:
     return hmac.compare_digest(expected, signature_header or "")
 
 
-# ── Main dispatcher ───────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Main dispatcher
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def handle_vapi_event(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Route an inbound Vapi event to the appropriate handler.
-
     Returns a response dict that Vapi expects for each event type.
     """
-    message = payload.get("message", payload)
+    message    = payload.get("message", payload)
     event_type = message.get("type", "")
-    call = message.get("call", {})
-    call_id = call.get("id", message.get("call_id", "unknown"))
+    call       = message.get("call", {})
+    call_id    = call.get("id", message.get("call_id", "unknown"))
 
-    # Bind call context for structured logging
     phone = _extract_phone(call)
     set_call_context(call_id=call_id, phone=phone)
 
@@ -109,7 +115,9 @@ async def handle_vapi_event(payload: dict[str, Any]) -> dict[str, Any]:
         clear_call_context()
 
 
-# ── Event handlers ────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Event Handlers
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def _handle_assistant_request(
     message: dict[str, Any],
@@ -124,32 +132,52 @@ async def _handle_assistant_request(
 
     system_prompt, contact = await ctx_service.build_context(phone=phone or "")
 
-    # Store state for this call
+    contact_id = contact.get("id") if contact else None
+
+    # Initialize call state — this dict is shared across all handlers for this call
     _call_state[call_id] = {
-        "system_prompt": system_prompt,
-        "contact": contact,
-        "transcript": [],
-        "messages": [],
-        "phone": phone,
+        "system_prompt":  system_prompt,
+        "contact":        contact,
+        "contact_id":     contact_id,
+        "phone":          phone,
+        "transcript":     [],
+        "messages":       [],
+        # Phase 1 tracking fields
+        "caller_first_name":       contact.get("firstName", "") if contact else "",
+        "caller_last_name":        contact.get("lastName", "")  if contact else "",
+        "caller_email":            contact.get("email", "")     if contact else "",
+        "opportunity_id":          None,
+        "opportunity_name":        None,
+        "pipeline_stage":          "new_lead",
+        "booking_link_requested":  False,
+        "qualification":           {},
+        "end_reason":              None,
     }
 
     return {
         "assistant": {
-            "name": "TaskDeskr Voice Agent",
+            "name": "Aria — TaskDeskr AI Front Desk",
             "model": {
                 "provider": "openai",
-                "model": settings.OPENAI_MODEL,
+                "model": "gpt-4o-mini",
                 "systemPrompt": system_prompt,
                 "tools": TOOL_DEFINITIONS,
-                "temperature": 0.3,
+                "temperature": 0.4,
             },
             "voice": {
                 "provider": "11labs",
                 "voiceId": "rachel",
             },
             "firstMessage": _build_greeting(contact),
-            "endCallFunctionEnabled": True,
+            "endCallMessage": "Thank you for calling TaskDeskr. Have a wonderful day!",
+            "endCallPhrases": [
+                "goodbye", "bye bye", "talk later", "have a good day", "thank you bye"
+            ],
             "recordingEnabled": True,
+            "maxDurationSeconds": 600,
+            "silenceTimeoutSeconds": 30,
+            "responseDelaySeconds": 0.5,
+            "numWordsToInterruptAssistant": 3,
             "transcriber": {
                 "provider": "deepgram",
                 "model": "nova-2",
@@ -167,12 +195,23 @@ async def _handle_call_started(
     """Initialize call state if not already done via assistant-request."""
     if call_id not in _call_state:
         system_prompt, contact = await ctx_service.build_context(phone=phone or "")
+        contact_id = contact.get("id") if contact else None
         _call_state[call_id] = {
-            "system_prompt": system_prompt,
-            "contact": contact,
-            "transcript": [],
-            "messages": [],
-            "phone": phone,
+            "system_prompt":  system_prompt,
+            "contact":        contact,
+            "contact_id":     contact_id,
+            "phone":          phone,
+            "transcript":     [],
+            "messages":       [],
+            "caller_first_name":       contact.get("firstName", "") if contact else "",
+            "caller_last_name":        contact.get("lastName", "")  if contact else "",
+            "caller_email":            contact.get("email", "")     if contact else "",
+            "opportunity_id":          None,
+            "opportunity_name":        None,
+            "pipeline_stage":          "new_lead",
+            "booking_link_requested":  False,
+            "qualification":           {},
+            "end_reason":              None,
         }
         logger.info("Call state initialized on call-started")
     else:
@@ -193,41 +232,38 @@ async def _handle_function_call(
     tool_name = func_call.get("name", "")
     arguments = func_call.get("parameters", "{}")
     if isinstance(arguments, dict):
-        import json
         arguments = json.dumps(arguments)
 
+    # Get the mutable call state — pass it to the dispatcher so handlers
+    # can read and write contact_id, opportunity_id, etc.
     state = _call_state.get(call_id, {})
-    contact = state.get("contact") or {}
-    contact_id = contact.get("id")
-    phone = state.get("phone")
 
     logger.info("Executing tool call", extra={"tool": tool_name})
 
     result = await dispatcher.dispatch(
         tool_name=tool_name,
         arguments_json=arguments,
-        contact_id=contact_id,
-        phone=phone,
+        contact_id=state.get("contact_id"),
+        phone=state.get("phone"),
+        call_state=state,
     )
 
-    # Handle special actions that affect call flow
-    action = result.get("action")
-    if action == "transfer":
+    # Sync any contact_id updates back to the main state
+    if state.get("contact_id") and call_id in _call_state:
+        _call_state[call_id]["contact_id"] = state["contact_id"]
+
+    # Handle Vapi flow control actions
+    action = result.get("action", {})
+    action_type = action.get("type", "") if isinstance(action, dict) else ""
+
+    if action_type == "end-call":
         return {
-            "result": result.get("message", "Transferring you now."),
-            "action": {
-                "type": "transfer-call",
-                "destination": {"type": "number", "number": result["transfer_to"]},
-            },
-        }
-    elif action == "end_call":
-        return {
-            "result": result.get("farewell_message", "Goodbye!"),
+            "result": result.get("result", "Thank you for calling. Goodbye!"),
             "action": {"type": "end-call"},
         }
 
     # Standard tool result — returned as text to the LLM
-    return {"result": result.get("message", str(result))}
+    return {"result": result.get("result", str(result))}
 
 
 async def _handle_end_of_call(
@@ -236,29 +272,32 @@ async def _handle_end_of_call(
 ) -> dict[str, Any]:
     """
     Process the end-of-call report: generate a structured summary and
-    push it to GHL. Clean up call state.
+    push it to GHL as a note. Clean up call state.
     """
     logger.info("Processing end-of-call report")
 
     state = _call_state.pop(call_id, {})
-    contact = state.get("contact") or {}
-    contact_id = contact.get("id")
+    contact    = state.get("contact") or {}
+    contact_id = state.get("contact_id") or contact.get("id")
 
     # Build transcript from Vapi's artifact
-    artifact = message.get("artifact", {})
-    raw_transcript = artifact.get("transcript", "")
-    messages = artifact.get("messages", state.get("messages", []))
+    artifact        = message.get("artifact", {})
+    raw_transcript  = artifact.get("transcript", "")
+    vapi_messages   = artifact.get("messages", [])
 
-    # Convert to LLM message format if needed
-    if isinstance(messages, list) and messages:
+    if vapi_messages:
         transcript = [
-            {"role": m.get("role", "user"), "content": m.get("message", m.get("content", ""))}
-            for m in messages
+            {
+                "role":    m.get("role", "user"),
+                "content": m.get("message") or m.get("content") or "",
+            }
+            for m in vapi_messages
             if m.get("message") or m.get("content")
         ]
+    elif raw_transcript:
+        transcript = [{"role": "user", "content": raw_transcript}]
     else:
-        # Fallback: wrap raw transcript as a single user message
-        transcript = [{"role": "user", "content": raw_transcript}] if raw_transcript else []
+        transcript = state.get("messages", [])
 
     summary = await summary_service.generate_and_save_summary(
         transcript=transcript,
@@ -269,8 +308,8 @@ async def _handle_end_of_call(
     logger.info(
         "Call ended and summarized",
         extra={
-            "outcome": summary.get("outcome"),
-            "sentiment": summary.get("sentiment"),
+            "outcome":    summary.get("outcome"),
+            "sentiment":  summary.get("sentiment"),
             "contact_id": contact_id,
         },
     )
@@ -294,7 +333,9 @@ def _handle_hang(call_id: str) -> dict[str, Any]:
     return {"status": "ok"}
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_phone(call: dict[str, Any]) -> Optional[str]:
     """Extract the caller's phone number from the Vapi call object."""
@@ -305,8 +346,17 @@ def _extract_phone(call: dict[str, Any]) -> Optional[str]:
 def _build_greeting(contact: Optional[dict[str, Any]]) -> str:
     """Build a personalized opening greeting."""
     if not contact:
-        return "Hello! Thank you for calling. How can I help you today?"
+        return (
+            "Thank you for calling TaskDeskr. This is Aria, your AI front desk assistant. "
+            "How can I help you today?"
+        )
     first_name = contact.get("firstName", "")
     if first_name:
-        return f"Hello {first_name}! Thanks for calling. How can I help you today?"
-    return "Hello! Thank you for calling. How can I help you today?"
+        return (
+            f"Hi {first_name}! Thank you for calling TaskDeskr. "
+            "This is Aria. How can I help you today?"
+        )
+    return (
+        "Thank you for calling TaskDeskr. This is Aria, your AI front desk assistant. "
+        "How can I help you today?"
+    )
