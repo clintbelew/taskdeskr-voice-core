@@ -151,14 +151,17 @@ async def _handle_assistant_request(
             "name": "Aria — TaskDeskr AI Front Desk",
             "model": {
                 "provider": "anthropic",
-                "model": settings.ANTHROPIC_MODEL,
+                "model": "claude-opus-4-5-20251101",  # Full versioned name required by Vapi
                 "systemPrompt": system_prompt,
                 "tools": TOOL_DEFINITIONS,
                 "temperature": 0.4,
             },
             "voice": {
                 "provider": "11labs",
-                "voiceId": "rachel",
+                "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — confirmed working in prior calls
+                "stability": 0.5,
+                "similarityBoost": 0.75,
+                "useSpeakerBoost": True,
             },
             "firstMessage": _build_greeting(contact),
             "endCallMessage": "Thank you for calling TaskDeskr. Have a wonderful day!",
@@ -172,8 +175,8 @@ async def _handle_assistant_request(
             "numWordsToInterruptAssistant": 3,
             "transcriber": {
                 "provider": "deepgram",
-                "model": "nova-2",
-                "language": "en-US",
+                "model": "nova-3",
+                "language": "en",
                 "endpointing": 300,
             },
             "backgroundDenoisingEnabled": True,
