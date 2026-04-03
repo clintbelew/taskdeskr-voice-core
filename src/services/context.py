@@ -157,21 +157,32 @@ def build_assistant_config(system_prompt: str, tools: list[dict]) -> dict[str, A
     """
     Build the full Vapi assistant configuration object.
     Returned in response to the 'assistant-request' webhook event.
+
+    IMPORTANT: Model name must use the full versioned string that Vapi recognises.
+    Voice must use the exact ElevenLabs voiceId that worked in the pre-built assistant.
     """
     return {
         "name": "Aria — TaskDeskr AI Front Desk",
         "model": {
-            "provider": "openai",
-            "model": settings.OPENAI_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt}
-            ],
+            "provider": "anthropic",
+            "model": "claude-opus-4-5-20251101",  # Full versioned name required by Vapi
+            "systemPrompt": system_prompt,  # Anthropic uses systemPrompt, not messages[]
             "tools": tools,
             "temperature": 0.4,
         },
         "voice": {
             "provider": "11labs",
-            "voiceId": "rachel",
+            "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — confirmed working in prior calls
+            "stability": 0.5,
+            "similarityBoost": 0.75,
+            "useSpeakerBoost": True,
+        },
+        "transcriber": {
+            "provider": "deepgram",
+            "model": "nova-3",
+            "language": "en",
+            "smartFormat": True,
+            "endpointing": 300,
         },
         "firstMessage": (
             "Thank you for calling TaskDeskr. This is Aria, your AI front desk assistant. "
@@ -188,4 +199,5 @@ def build_assistant_config(system_prompt: str, tools: list[dict]) -> dict[str, A
         "responseDelaySeconds": 0.5,
         "llmRequestDelaySeconds": 0.1,
         "numWordsToInterruptAssistant": 3,
+        "backgroundDenoisingEnabled": True,
     }
