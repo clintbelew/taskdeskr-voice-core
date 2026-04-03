@@ -41,7 +41,8 @@ class Settings(BaseSettings):
 
     DEFAULT_LLM_PROVIDER: Literal["openai", "anthropic", "auto"] = "anthropic"
     OPENAI_MODEL: str = "gpt-4.1-mini"
-    ANTHROPIC_MODEL: str = "claude-opus-4-20250514"
+    ANTHROPIC_MODEL: str = "claude-sonnet-4-5-20250929"         # Conversation model (low latency)
+    ANTHROPIC_SUMMARY_MODEL: str = "claude-opus-4-20250514"    # Summary/analysis model (high quality)
 
     # ── GoHighLevel ───────────────────────────────────────────────────────────
     GHL_API_KEY: str = Field(..., description="GoHighLevel Bearer token (v2 Private Integration Key)")

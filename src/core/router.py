@@ -104,7 +104,7 @@ async def complete(
 
     if provider == "openai":
         return await _complete_openai(messages, system_prompt, tools, temperature, max_tokens)
-    return await _complete_anthropic(messages, system_prompt, tools, temperature, max_tokens)
+    return await _complete_anthropic(messages, system_prompt, tools, temperature, max_tokens, task_type=task_type)
 
 
 # ── OpenAI backend ────────────────────────────────────────────────────────────
@@ -163,6 +163,7 @@ async def _complete_anthropic(
     tools: Optional[list[dict[str, Any]]],
     temperature: float,
     max_tokens: int,
+    task_type: Optional[str] = None,
 ) -> dict[str, Any]:
     # Convert OpenAI-style tool definitions to Anthropic format
     anthropic_tools = None
@@ -176,8 +177,16 @@ async def _complete_anthropic(
             for t in tools
         ]
 
+    # Use Opus for summarization/analysis; Sonnet for everything else
+    _summary_tasks = {"summarize", "analyze", "extract", "reason"}
+    model = (
+        settings.ANTHROPIC_SUMMARY_MODEL
+        if task_type and task_type.lower() in _summary_tasks
+        else settings.ANTHROPIC_MODEL
+    )
+
     kwargs: dict[str, Any] = {
-        "model": settings.ANTHROPIC_MODEL,
+        "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,

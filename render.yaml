@@ -24,11 +24,13 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: DEFAULT_LLM_PROVIDER
-        value: "openai"
+        value: "anthropic"
       - key: OPENAI_MODEL
         value: "gpt-4.1-mini"
       - key: ANTHROPIC_MODEL
-        value: "claude-opus-4-5-20251101"
+        value: "claude-sonnet-4-5-20250929"
+      - key: ANTHROPIC_SUMMARY_MODEL
+        value: "claude-opus-4-20250514"
       - key: VAPI_WEBHOOK_SECRET
         sync: false
       - key: GHL_API_KEY
