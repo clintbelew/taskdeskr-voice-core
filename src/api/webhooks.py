@@ -234,11 +234,12 @@ async def _handle_function_call(
     tool_call_list = message.get("toolCallList", [])
     if tool_call_list:
         # New Vapi format: tool-calls event with toolCallList array
-        # Process the first tool call (Vapi sends one at a time in practice)
-        tool_call  = tool_call_list[0]
+        # Vapi structure: {id, type, function: {name, arguments}}
+        tool_call    = tool_call_list[0]
         tool_call_id = tool_call.get("id", "")
-        tool_name  = tool_call.get("name", "")
-        arguments  = tool_call.get("arguments", {})
+        func_obj     = tool_call.get("function", {})
+        tool_name    = func_obj.get("name", tool_call.get("name", ""))
+        arguments    = func_obj.get("arguments", tool_call.get("arguments", "{}"))
         if isinstance(arguments, dict):
             arguments = json.dumps(arguments)
     else:
