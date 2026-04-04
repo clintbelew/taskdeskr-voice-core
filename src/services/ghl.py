@@ -442,29 +442,130 @@ async def remove_tags(contact_id: str, tags: list[str]) -> dict[str, Any]:
 # 6. SMS via Conversations API
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _get_or_create_conversation(contact_id: str) -> Optional[str]:
+    """
+    Look up an existing GHL conversation for a contact, or create one.
+    Returns the conversationId string, or None on failure.
+    """
+    async with httpx.AsyncClient(timeout=12) as client:
+        # Search for existing conversation
+        resp = await client.get(
+            f"{GHL_BASE}/conversations/search",
+            headers=_headers(),
+            params={
+                "locationId": settings.GHL_LOCATION_ID,
+                "contactId": contact_id,
+                "limit": 1,
+            },
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            conversations = data.get("conversations", [])
+            if conversations:
+                conv_id = conversations[0].get("id")
+                if conv_id:
+                    logger.info(
+                        "Found existing conversation",
+                        extra={"contact_id": contact_id, "conversation_id": conv_id},
+                    )
+                    return conv_id
+
+        # No existing conversation — create one
+        create_resp = await client.post(
+            f"{GHL_BASE}/conversations/",
+            headers=_headers(),
+            json={
+                "contactId": contact_id,
+                "locationId": settings.GHL_LOCATION_ID,
+            },
+        )
+        if create_resp.status_code in (200, 201):
+            conv_data = create_resp.json()
+            conv_id = (
+                conv_data.get("conversation", {}).get("id")
+                or conv_data.get("id")
+            )
+            if conv_id:
+                logger.info(
+                    "Created new conversation",
+                    extra={"contact_id": contact_id, "conversation_id": conv_id},
+                )
+                return conv_id
+
+    logger.warning(
+        "Could not get or create conversation",
+        extra={"contact_id": contact_id},
+    )
+    return None
+
+
 async def send_sms(
     contact_id: str,
     message: str,
     from_number: str = "",
 ) -> dict[str, Any]:
-    """Send an outbound SMS to a contact via GHL Conversations API."""
-    payload: dict[str, Any] = {
+    """
+    Send an outbound SMS to a contact via GHL Conversations API.
+
+    Strategy (avoids the 'No conversationProviderId' 400 error):
+      1. Look up or create the GHL conversation for this contact.
+      2. Send via POST /conversations/messages using conversationId — GHL
+         resolves the provider automatically from the conversation context.
+      3. Fall back to the /outbound endpoint with fromNumber if step 2 fails.
+    """
+    # Step 1: resolve conversation
+    conversation_id = await _get_or_create_conversation(contact_id)
+
+    if conversation_id:
+        # Step 2: send via conversation thread
+        payload: dict[str, Any] = {
+            "type": "SMS",
+            "message": message,
+            "conversationId": conversation_id,
+            "contactId": contact_id,
+        }
+        if from_number:
+            payload["fromNumber"] = from_number
+
+        async with httpx.AsyncClient(timeout=12) as client:
+            response = await client.post(
+                f"{GHL_BASE}/conversations/messages",
+                headers=_headers(),
+                json=payload,
+            )
+        if response.status_code in (200, 201):
+            logger.info(
+                "SMS sent via conversation",
+                extra={"contact_id": contact_id, "conversation_id": conversation_id},
+            )
+            return response.json()
+        logger.warning(
+            "SMS via conversation failed — trying outbound fallback",
+            extra={
+                "contact_id": contact_id,
+                "status": response.status_code,
+                "body": response.text[:300],
+            },
+        )
+
+    # Step 3: fallback — outbound endpoint
+    fallback_payload: dict[str, Any] = {
         "type": "SMS",
         "contactId": contact_id,
         "message": message,
     }
     if from_number:
-        payload["fromNumber"] = from_number
+        fallback_payload["fromNumber"] = from_number
 
     async with httpx.AsyncClient(timeout=12) as client:
-        response = await client.post(
+        fallback_resp = await client.post(
             f"{GHL_BASE}/conversations/messages/outbound",
             headers=_headers(),
-            json=payload,
+            json=fallback_payload,
         )
-    _raise_for_status(response, "send_sms")
-    logger.info("SMS sent", extra={"contact_id": contact_id})
-    return response.json()
+    _raise_for_status(fallback_resp, "send_sms")
+    logger.info("SMS sent via outbound fallback", extra={"contact_id": contact_id})
+    return fallback_resp.json()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
