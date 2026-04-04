@@ -19,11 +19,16 @@ Design principles:
 
 from typing import Any
 
+# The Vapi webhook endpoint — tools must include this so Vapi knows where to POST function-call events.
+# Without this, Vapi silently returns "No result returned" for every tool call.
+VAPI_WEBHOOK_URL = "https://taskdeskr-voice-core.onrender.com/vapi/webhook"
+
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
 
     # ── 1. Save caller name and basic info ────────────────────────────────────
     {
         "type": "function",
+        "server": {"url": VAPI_WEBHOOK_URL},
         "function": {
             "name": "save_caller_info",
             "description": (
@@ -54,6 +59,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ── 2. Save qualification data ────────────────────────────────────────────
     {
         "type": "function",
+        "server": {"url": VAPI_WEBHOOK_URL},
         "function": {
             "name": "save_qualification_data",
             "description": (
@@ -94,6 +100,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ── 3. Create lead opportunity ────────────────────────────────────────────
     {
         "type": "function",
+        "server": {"url": VAPI_WEBHOOK_URL},
         "function": {
             "name": "create_lead_opportunity",
             "description": (
@@ -120,6 +127,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ── 4. Send booking link (move to Booking Link Sent stage) ────────────────
     {
         "type": "function",
+        "server": {"url": VAPI_WEBHOOK_URL},
         "function": {
             "name": "send_booking_link",
             "description": (
@@ -145,6 +153,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ── 5. End call ───────────────────────────────────────────────────────────
     {
         "type": "function",
+        "server": {"url": VAPI_WEBHOOK_URL},
         "function": {
             "name": "end_call",
             "description": (
