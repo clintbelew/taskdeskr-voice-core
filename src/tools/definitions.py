@@ -1,20 +1,21 @@
 """
-TaskDeskr Voice Core — Phase 1 Tool Definitions
-================================================
+TaskDeskr Voice Core — Tool Definitions
+========================================
 These are the tools the LLM can call during a live Vapi conversation.
-Defined in OpenAI function-calling format.
+Defined in OpenAI function-calling format with Vapi server URL.
 
-Phase 1 tools (5 total):
-  1. save_caller_info        — capture name and basic info
-  2. save_qualification_data — save insurance, complaint, referral source
-  3. create_lead_opportunity — open a deal in the Voice Bot Pipeline
-  4. send_booking_link       — move stage to Booking Link Sent
-  5. end_call                — gracefully close the call
+Tools (6 total):
+  1. save_caller_info         — capture name and basic info
+  2. save_lead_info           — save interest level, questions, use case
+  3. create_lead_opportunity  — open a deal in the Voice Bot Pipeline
+  4. send_website_link        — SMS the caller taskdeskr.com
+  5. send_demo_booking_link   — SMS the caller a demo calendar booking link
+  6. end_call                 — gracefully close the call
 
 Design principles:
   - Tools are named for business outcomes, not technical operations.
   - Parameters are minimal — only what the AI can realistically collect.
-  - No tool does more than one GHL operation (keeps errors isolated).
+  - Every tool includes a server.url so Vapi knows where to POST function-call events.
 """
 
 from typing import Any
@@ -56,40 +57,43 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
 
-    # ── 2. Save qualification data ────────────────────────────────────────────
+    # ── 2. Save lead info (interest, questions, use case) ─────────────────────
     {
         "type": "function",
         "server": {"url": VAPI_WEBHOOK_URL},
         "function": {
-            "name": "save_qualification_data",
+            "name": "save_lead_info",
             "description": (
-                "Save lead qualification information collected during the call. "
-                "Call this after gathering insurance status, chief complaint, "
-                "or how they heard about the office. Only include fields you have "
-                "actually collected — do not guess or fabricate values."
+                "Save information about the caller's interest in TaskDeskr. "
+                "Call this after you understand what they are looking for and "
+                "what questions they asked. Only include fields you have actually collected."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "insurance_status": {
+                    "interest_level": {
                         "type": "string",
-                        "description": "Does the caller have health insurance? E.g. 'Yes', 'No', 'Not sure'",
+                        "enum": ["high", "medium", "low", "just_browsing"],
+                        "description": "How interested the caller seemed in TaskDeskr",
                     },
-                    "insurance_provider": {
+                    "business_type": {
                         "type": "string",
-                        "description": "Name of the caller's insurance provider (e.g. 'Blue Cross', 'Aetna')",
+                        "description": (
+                            "Type of business the caller runs or works at "
+                            "(e.g. 'medical office', 'law firm', 'real estate agency')"
+                        ),
                     },
-                    "chief_complaint": {
+                    "main_question": {
                         "type": "string",
-                        "description": "Brief description of the caller's main symptom or reason for calling",
+                        "description": "The main question or concern the caller had about TaskDeskr",
                     },
                     "referral_source": {
                         "type": "string",
-                        "description": "How the caller heard about the office (e.g. 'Google', 'Friend referral')",
+                        "description": "How the caller heard about TaskDeskr (e.g. 'Google', 'friend referral', 'social media')",
                     },
-                    "question_or_concern": {
-                        "type": "string",
-                        "description": "Any specific question or concern the caller mentioned",
+                    "demo_requested": {
+                        "type": "boolean",
+                        "description": "Whether the caller asked for or agreed to a live demo",
                     },
                 },
                 "required": [],
@@ -115,7 +119,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": (
                             "Short descriptive name for the opportunity. "
-                            "Use format: 'Voice Bot Lead — [First Name] [Last Name]'"
+                            "Use format: 'TaskDeskr Lead — [First Name] [Last Name]'"
                         ),
                     },
                 },
@@ -124,33 +128,50 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
 
-    # ── 4. Send booking link (move to Booking Link Sent stage) ────────────────
+    # ── 4. Send website link via SMS ──────────────────────────────────────────
     {
         "type": "function",
         "server": {"url": VAPI_WEBHOOK_URL},
         "function": {
-            "name": "send_booking_link",
+            "name": "send_website_link",
             "description": (
-                "Use this when the caller is interested in scheduling an appointment. "
-                "This moves their pipeline stage to 'Booking Link Sent' so the team "
-                "knows to follow up with a scheduling link. "
-                "Tell the caller: 'I'll have our team send you a scheduling link by text shortly.'"
+                "Send the caller a text message with the TaskDeskr website link (taskdeskr.com). "
+                "Use this when the caller wants to learn more at their own pace. "
+                "Tell the caller: 'I'll text you the website link right now.'"
             ),
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "caller_interest_level": {
-                        "type": "string",
-                        "enum": ["high", "medium", "low"],
-                        "description": "How interested the caller seemed in scheduling",
-                    },
-                },
-                "required": ["caller_interest_level"],
+                "properties": {},
+                "required": [],
             },
         },
     },
 
-    # ── 5. End call ───────────────────────────────────────────────────────────
+    # ── 5. Send demo booking link via SMS ─────────────────────────────────────
+    {
+        "type": "function",
+        "server": {"url": VAPI_WEBHOOK_URL},
+        "function": {
+            "name": "send_demo_booking_link",
+            "description": (
+                "Send the caller a text message with a link to book a demo call with the TaskDeskr team. "
+                "Use this when the caller wants to schedule a demo or speak with someone from the team. "
+                "Tell the caller: 'I'll text you a link to book a demo call with our team.'"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "preferred_time": {
+                        "type": "string",
+                        "description": "If the caller mentioned a preferred time or day for the demo (optional)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+
+    # ── 6. End call ───────────────────────────────────────────────────────────
     {
         "type": "function",
         "server": {"url": VAPI_WEBHOOK_URL},
@@ -170,7 +191,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                             "completed",
                             "caller_requested",
                             "no_response",
-                            "disqualified",
+                            "not_interested",
                         ],
                         "description": "Reason the call is ending",
                     },
