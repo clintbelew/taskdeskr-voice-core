@@ -77,7 +77,7 @@ async def handle_vapi_event(payload: dict[str, Any]) -> dict[str, Any]:
             return await _handle_assistant_request(message, call_id, phone)
         elif event_type == "call-started":
             return await _handle_call_started(message, call_id, phone)
-        elif event_type == "function-call":
+        elif event_type in ("function-call", "tool-calls"):
             return await _handle_function_call(message, call_id)
         elif event_type == "end-of-call-report":
             return await _handle_end_of_call(message, call_id)
@@ -227,13 +227,28 @@ async def _handle_function_call(
 ) -> dict[str, Any]:
     """
     Execute a tool call requested by the LLM and return the result.
-    State is read from and written back to Redis.
+    Handles both legacy "function-call" and current "tool-calls" event types.
+    Returns results in Vapi's expected format: {"results": [{"toolCallId": X, "result": Y}]}
     """
-    func_call = message.get("functionCall", {})
-    tool_name = func_call.get("name", "")
-    arguments = func_call.get("parameters", "{}")
-    if isinstance(arguments, dict):
-        arguments = json.dumps(arguments)
+    # Support both legacy function-call format and current tool-calls format
+    tool_call_list = message.get("toolCallList", [])
+    if tool_call_list:
+        # New Vapi format: tool-calls event with toolCallList array
+        # Process the first tool call (Vapi sends one at a time in practice)
+        tool_call  = tool_call_list[0]
+        tool_call_id = tool_call.get("id", "")
+        tool_name  = tool_call.get("name", "")
+        arguments  = tool_call.get("arguments", {})
+        if isinstance(arguments, dict):
+            arguments = json.dumps(arguments)
+    else:
+        # Legacy function-call format
+        func_call    = message.get("functionCall", {})
+        tool_call_id = func_call.get("id", "")
+        tool_name    = func_call.get("name", "")
+        arguments    = func_call.get("parameters", "{}")
+        if isinstance(arguments, dict):
+            arguments = json.dumps(arguments)
 
     logger.info("Executing tool call", extra={"tool": tool_name})
 
@@ -282,13 +297,16 @@ async def _handle_function_call(
     # Handle Vapi flow control actions
     action      = result.get("action", {})
     action_type = action.get("type", "") if isinstance(action, dict) else ""
+    result_text = result.get("result", str(result))
+
     if action_type == "end-call":
         return {
-            "result": result.get("result", "Thank you for calling. Goodbye!"),
+            "results": [{"toolCallId": tool_call_id, "result": result_text}],
             "action": {"type": "end-call"},
         }
 
-    return {"result": result.get("result", str(result))}
+    # Vapi expects: {"results": [{"toolCallId": "<id>", "result": "<text>"}]}
+    return {"results": [{"toolCallId": tool_call_id, "result": result_text}]}
 
 
 async def _handle_end_of_call(
