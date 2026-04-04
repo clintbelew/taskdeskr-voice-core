@@ -7,10 +7,19 @@ Endpoints:
   POST /vapi/webhook        — Main Vapi event receiver (all call lifecycle events)
   GET  /health              — Health check for Render/Railway uptime monitoring
   GET  /                    — Root info endpoint
+
+Keep-warm:
+  A background task pings /health every 10 minutes so Render's free tier never
+  goes cold. Render spins down after ~15 min of inactivity; Vapi only waits 20s
+  for a webhook response — so a cold start = failed call.
 """
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
+
+import httpx
 from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,15 +31,61 @@ from src.api.webhooks import handle_vapi_event
 
 logger = get_logger(__name__)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Keep-warm background task
+# ─────────────────────────────────────────────────────────────────────────────
+
+_KEEP_WARM_INTERVAL = 10 * 60  # 10 minutes in seconds
+_keep_warm_task: Optional[asyncio.Task] = None
+
+
+async def _keep_warm_loop() -> None:
+    """Ping our own /health endpoint every 10 minutes to prevent Render cold starts."""
+    # Wait a bit after startup before the first ping
+    await asyncio.sleep(60)
+    base_url = f"https://{settings.RENDER_EXTERNAL_HOSTNAME}" if getattr(settings, "RENDER_EXTERNAL_HOSTNAME", None) else "https://taskdeskr-voice-core.onrender.com"
+    url = f"{base_url}/health"
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url)
+            logger.info("Keep-warm ping sent", extra={"status": resp.status_code, "url": url})
+        except Exception as exc:
+            logger.warning("Keep-warm ping failed", extra={"error": str(exc)})
+        await asyncio.sleep(_KEEP_WARM_INTERVAL)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start keep-warm background task on startup; cancel it on shutdown."""
+    global _keep_warm_task
+    _keep_warm_task = asyncio.create_task(_keep_warm_loop())
+    logger.info("Keep-warm background task started (interval: 10 min)")
+    try:
+        yield
+    finally:
+        if _keep_warm_task and not _keep_warm_task.done():
+            _keep_warm_task.cancel()
+            try:
+                await _keep_warm_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("Keep-warm background task stopped")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Application factory
+# ─────────────────────────────────────────────────────────────────────────────
 
 def create_app() -> FastAPI:
     """Application factory — creates and configures the FastAPI instance."""
     app = FastAPI(
         title=settings.APP_NAME,
         version=settings.APP_VERSION,
-        description="Production-ready voice backend for TaskDeskr: Vapi + OpenAI/Claude + GoHighLevel",
+        description="Production-ready voice backend for TaskDeskr: Vapi + Claude + GoHighLevel",
         docs_url="/docs" if settings.DEBUG else None,
         redoc_url="/redoc" if settings.DEBUG else None,
+        lifespan=lifespan,
     )
 
     # CORS — restrict in production to your actual frontend/Vapi domains

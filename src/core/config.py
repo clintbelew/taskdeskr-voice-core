@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     # ── Application ───────────────────────────────────────────────────────────
     APP_NAME: str = "TaskDeskr Voice Core"
-    APP_VERSION: str = "1.1.0"
+    APP_VERSION: str = "1.3.0"
     PORT: int = 8000
     DEBUG: bool = False
 

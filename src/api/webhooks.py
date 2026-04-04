@@ -111,59 +111,63 @@ async def _handle_assistant_request(
     phone: Optional[str],
 ) -> dict[str, Any]:
     """
-    Vapi calls this BEFORE the call begins — we resolve the GHL contact here
-    and store contact_id in Redis state before returning the assistant config.
-    Nothing speaks until this function returns.
+    Vapi calls this BEFORE the call begins and waits for a response.
+    CRITICAL: Must return in < 20 seconds or Vapi rejects the call.
+
+    Strategy: Return the assistant config IMMEDIATELY using the base prompt
+    (no GHL lookup here). The GHL lookup and CRM personalisation happen in
+    call-started, which fires after the call connects with no timeout risk.
     """
-    logger.info("Handling assistant-request — resolving GHL contact before call starts")
+    logger.info("Handling assistant-request — returning config instantly (no GHL lookup)")
 
-    # Build context: looks up GHL contact by phone, assembles system prompt
-    system_prompt, contact = await ctx_service.build_context(phone=phone or "")
-    contact_id = contact.get("id") if contact else None
+    # Use the base system prompt without CRM personalisation.
+    # CRM context will be resolved in call-started once the call is live.
+    system_prompt = ctx_service.BASE_SYSTEM_PROMPT
 
-    # Persist full call state to Redis (with in-memory fallback)
+    # Store minimal placeholder state so call-started knows to do the full init.
     await call_state.set(call_id, {
         "system_prompt":          system_prompt,
-        "contact":                contact,
-        "contact_id":             contact_id,
+        "contact":                None,
+        "contact_id":             None,
         "phone":                  phone,
         "transcript":             [],
         "messages":               [],
-        "caller_first_name":      contact.get("firstName", "") if contact else "",
-        "caller_last_name":       contact.get("lastName", "")  if contact else "",
-        "caller_email":           contact.get("email", "")     if contact else "",
+        "caller_first_name":      "",
+        "caller_last_name":       "",
+        "caller_email":           "",
         "opportunity_id":         None,
         "opportunity_name":       None,
         "pipeline_stage":         "new_lead",
         "booking_link_requested": False,
         "qualification":          {},
         "end_reason":             None,
+        "crm_init_done":          False,  # call-started will flip this to True
     })
 
     logger.info(
-        "Call state initialised in Redis",
-        extra={"call_id": call_id, "contact_id": contact_id, "phone": phone},
+        "Call state placeholder set — CRM init deferred to call-started",
+        extra={"call_id": call_id, "phone": phone},
     )
 
-    # Return the full dynamic assistant config to Vapi
+    # Return the full assistant config immediately
     return {
         "assistant": {
             "name": "Aria — TaskDeskr AI Front Desk",
             "model": {
                 "provider": "anthropic",
-                "model": "claude-sonnet-4-5-20250929",  # Conversation model — low latency (Vapi-verified string)
+                "model": "claude-sonnet-4-5-20250929",
                 "systemPrompt": system_prompt,
                 "tools": TOOL_DEFINITIONS,
                 "temperature": 0.4,
             },
             "voice": {
                 "provider": "11labs",
-                "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — confirmed working in prior calls
+                "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — confirmed working
                 "stability": 0.5,
                 "similarityBoost": 0.75,
                 "useSpeakerBoost": True,
             },
-            "firstMessage": _build_greeting(contact),  # Vapi plays this; LLM must NOT repeat it
+            "firstMessage": "Thank you for calling TaskDeskr. This is Aria. How can I help you today?",
             "endCallMessage": "Thank you for calling TaskDeskr. Have a wonderful day!",
             "endCallPhrases": [
                 "goodbye", "bye bye", "talk later", "have a good day", "thank you bye"
@@ -190,33 +194,68 @@ async def _handle_call_started(
     phone: Optional[str],
 ) -> dict[str, Any]:
     """
-    Fallback initialiser — only runs if assistant-request was not fired
-    (e.g. when using a pre-built Vapi assistant instead of server-driven mode).
+    Runs after the call connects. Performs the GHL lookup and fully initialises
+    call state — safe here because there is no timeout risk.
+
+    Two scenarios:
+    A) assistant-request already ran → state exists with crm_init_done=False
+       → do the GHL lookup now and update state with CRM data
+    B) no assistant-request (pre-built assistant mode) → state does not exist
+       → do full init from scratch
     """
-    if not await call_state.exists(call_id):
-        logger.info("call-started without prior assistant-request — initialising state now")
-        system_prompt, contact = await ctx_service.build_context(phone=phone or "")
-        contact_id = contact.get("id") if contact else None
-        await call_state.set(call_id, {
-            "system_prompt":          system_prompt,
-            "contact":                contact,
-            "contact_id":             contact_id,
-            "phone":                  phone,
-            "transcript":             [],
-            "messages":               [],
-            "caller_first_name":      contact.get("firstName", "") if contact else "",
-            "caller_last_name":       contact.get("lastName", "")  if contact else "",
-            "caller_email":           contact.get("email", "")     if contact else "",
-            "opportunity_id":         None,
-            "opportunity_name":       None,
-            "pipeline_stage":         "new_lead",
-            "booking_link_requested": False,
-            "qualification":          {},
-            "end_reason":             None,
-        })
-        logger.info("Call state initialised on call-started")
+    state_exists = await call_state.exists(call_id)
+    crm_done     = False
+    if state_exists:
+        existing = await call_state.get(call_id)
+        crm_done = existing.get("crm_init_done", False)
+
+    if not crm_done:
+        logger.info("call-started: running GHL lookup and completing CRM init",
+                    extra={"call_id": call_id, "phone": phone})
+        try:
+            system_prompt, contact = await ctx_service.build_context(phone=phone or "")
+            contact_id = contact.get("id") if contact else None
+        except Exception as exc:
+            logger.error("GHL lookup failed in call-started — using base prompt",
+                         extra={"error": str(exc)})
+            system_prompt = ctx_service.BASE_SYSTEM_PROMPT
+            contact       = None
+            contact_id    = None
+
+        crm_data = {
+            "system_prompt":     system_prompt,
+            "contact":           contact,
+            "contact_id":        contact_id,
+            "caller_first_name": contact.get("firstName", "") if contact else "",
+            "caller_last_name":  contact.get("lastName", "")  if contact else "",
+            "caller_email":      contact.get("email", "")     if contact else "",
+            "crm_init_done":     True,
+        }
+
+        if state_exists:
+            await call_state.update(call_id, crm_data)
+        else:
+            # No prior assistant-request — build full state from scratch
+            await call_state.set(call_id, {
+                **crm_data,
+                "phone":                  phone,
+                "transcript":             [],
+                "messages":               [],
+                "opportunity_id":         None,
+                "opportunity_name":       None,
+                "pipeline_stage":         "new_lead",
+                "booking_link_requested": False,
+                "qualification":          {},
+                "end_reason":             None,
+            })
+
+        logger.info(
+            "CRM init complete in call-started",
+            extra={"call_id": call_id, "contact_id": contact_id},
+        )
     else:
-        logger.info("Call state already exists from assistant-request")
+        logger.info("call-started: CRM already initialised — skipping",
+                    extra={"call_id": call_id})
 
     return {"status": "ok"}
 
