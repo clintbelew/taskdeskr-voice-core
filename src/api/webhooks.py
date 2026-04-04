@@ -163,7 +163,7 @@ async def _handle_assistant_request(
                 "similarityBoost": 0.75,
                 "useSpeakerBoost": True,
             },
-            "firstMessage": _build_greeting(contact),
+            "firstMessage": _build_greeting(contact),  # Vapi plays this; LLM must NOT repeat it
             "endCallMessage": "Thank you for calling TaskDeskr. Have a wonderful day!",
             "endCallPhrases": [
                 "goodbye", "bye bye", "talk later", "have a good day", "thank you bye"
