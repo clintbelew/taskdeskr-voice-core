@@ -600,88 +600,67 @@ async def check_availability(
     days_ahead: int = 3,
 ) -> list[dict[str, Any]]:
     """
-    Fetch open time slots from GHL for a given date range.
+    Generate open time slots for any requested date.
+
+    The calendar is fully open — slots are generated on the fly for any
+    weekday or weekend, 9 AM – 5 PM Central, every 30 minutes.  No GHL
+    calendar availability configuration is required.
 
     Args:
         preferred_date: ISO date string (YYYY-MM-DD) — the caller's preferred day.
-        calendar_id:    GHL calendar ID to query.
-        days_ahead:     How many additional days to look ahead if the preferred
-                        date has no slots (default 3, so we check up to 4 days total).
+        calendar_id:    Unused (kept for signature compatibility).
+        days_ahead:     How many additional days to include after preferred_date
+                        (default 3, so up to 4 days of options are offered).
 
     Returns:
-        A list of slot dicts: [{"date": "Mon Apr 7", "time": "10:00 AM", "iso": "2026-04-07T10:00:00-05:00"}, ...]
-        Returns up to 6 slots across the date range, sorted chronologically.
-        Returns an empty list if no slots are available.
+        A list of up to 6 slot dicts:
+        [{"date": "Monday, April 7", "time": "10:00 AM",
+          "iso": "2026-04-07T10:00:00-05:00", "epoch_ms": ...}, ...]
     """
     from datetime import datetime, timedelta
     import pytz
 
     tz = pytz.timezone(GHL_TIMEZONE)
+    now = datetime.now(tz)
 
     try:
         start_dt = datetime.strptime(preferred_date, "%Y-%m-%d")
     except ValueError:
-        # If date parsing fails, use tomorrow
-        start_dt = datetime.now() + timedelta(days=1)
-
-    # Build start/end epoch timestamps (milliseconds)
-    start_epoch = int(start_dt.replace(hour=0, minute=0, second=0).timestamp() * 1000)
-    end_dt = start_dt + timedelta(days=days_ahead)
-    end_epoch = int(end_dt.replace(hour=23, minute=59, second=59).timestamp() * 1000)
-
-    params = {
-        "startDate": start_epoch,
-        "endDate": end_epoch,
-        "timezone": GHL_TIMEZONE,
-        "userId": "",  # empty = all users on the calendar
-    }
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{GHL_BASE}/calendars/{calendar_id}/free-slots",
-            headers=_headers(),
-            params=params,
+        start_dt = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0, tzinfo=None
         )
 
-    if resp.status_code != 200:
-        logger.warning(
-            "GHL free-slots API returned non-200",
-            extra={"status": resp.status_code, "body": resp.text[:300]},
-        )
-        return []
-
-    data = resp.json()
-
-    # GHL returns: {"_dates_": {"2026-04-07": {"slots": ["2026-04-07T10:00:00-05:00", ...]}, ...}}
-    slots_by_date: dict[str, Any] = data.get("_dates_", {})
+    # Business hours: 9 AM – 5 PM, 30-min slots
+    SLOT_HOURS = [9, 9.5, 10, 10.5, 11, 11.5, 12, 12.5,
+                  13, 13.5, 14, 14.5, 15, 15.5, 16, 16.5]
 
     result: list[dict[str, Any]] = []
-    for date_str, date_data in sorted(slots_by_date.items()):
-        raw_slots = date_data.get("slots", [])
-        for iso_slot in raw_slots:
-            try:
-                dt = datetime.fromisoformat(iso_slot)
-                # Convert to local timezone for display
-                if dt.tzinfo is None:
-                    dt = tz.localize(dt)
-                else:
-                    dt = dt.astimezone(tz)
-                result.append({
-                    "date": dt.strftime("%A, %B %-d"),   # e.g. "Monday, April 7"
-                    "time": dt.strftime("%-I:%M %p"),     # e.g. "10:00 AM"
-                    "iso": iso_slot,                      # original ISO for booking
-                    "epoch_ms": int(dt.timestamp() * 1000),
-                })
-            except Exception:
+
+    for day_offset in range(days_ahead + 1):
+        day = start_dt + timedelta(days=day_offset)
+        for frac_hour in SLOT_HOURS:
+            hour = int(frac_hour)
+            minute = 30 if frac_hour != int(frac_hour) else 0
+            naive_dt = day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            # Localise to Central and skip slots already in the past
+            local_dt = tz.localize(naive_dt)
+            if local_dt <= now:
                 continue
+            iso_slot = local_dt.isoformat()
+            result.append({
+                "date": local_dt.strftime("%A, %B %-d"),  # e.g. "Monday, April 7"
+                "time": local_dt.strftime("%-I:%M %p"),   # e.g. "10:00 AM"
+                "iso": iso_slot,
+                "epoch_ms": int(local_dt.timestamp() * 1000),
+            })
             if len(result) >= 6:
                 break
         if len(result) >= 6:
             break
 
     logger.info(
-        "check_availability returned slots",
-        extra={"calendar_id": calendar_id, "slot_count": len(result)},
+        "check_availability generated open slots",
+        extra={"preferred_date": preferred_date, "slot_count": len(result)},
     )
     return result
 
