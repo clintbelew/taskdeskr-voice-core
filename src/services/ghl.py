@@ -580,3 +580,180 @@ def _normalize_phone(phone: str) -> str:
     if len(digits) == 11 and digits.startswith("1"):
         return f"+{digits}"
     return f"+{digits}" if digits else phone
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. Calendar — Availability & Booking
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The primary demo-consultation calendar in the TaskDeskr GHL sub-account.
+# This is "Clint Belew Personal Calendar" — the 30-min demo booking calendar.
+GHL_CALENDAR_ID = "5K0hLjasj81cHyeSK6Xn"
+
+# Timezone used for all slot display and booking
+GHL_TIMEZONE = "America/Chicago"
+
+
+async def check_availability(
+    preferred_date: str,
+    calendar_id: str = GHL_CALENDAR_ID,
+    days_ahead: int = 3,
+) -> list[dict[str, Any]]:
+    """
+    Fetch open time slots from GHL for a given date range.
+
+    Args:
+        preferred_date: ISO date string (YYYY-MM-DD) — the caller's preferred day.
+        calendar_id:    GHL calendar ID to query.
+        days_ahead:     How many additional days to look ahead if the preferred
+                        date has no slots (default 3, so we check up to 4 days total).
+
+    Returns:
+        A list of slot dicts: [{"date": "Mon Apr 7", "time": "10:00 AM", "iso": "2026-04-07T10:00:00-05:00"}, ...]
+        Returns up to 6 slots across the date range, sorted chronologically.
+        Returns an empty list if no slots are available.
+    """
+    from datetime import datetime, timedelta
+    import pytz
+
+    tz = pytz.timezone(GHL_TIMEZONE)
+
+    try:
+        start_dt = datetime.strptime(preferred_date, "%Y-%m-%d")
+    except ValueError:
+        # If date parsing fails, use tomorrow
+        start_dt = datetime.now() + timedelta(days=1)
+
+    # Build start/end epoch timestamps (milliseconds)
+    start_epoch = int(start_dt.replace(hour=0, minute=0, second=0).timestamp() * 1000)
+    end_dt = start_dt + timedelta(days=days_ahead)
+    end_epoch = int(end_dt.replace(hour=23, minute=59, second=59).timestamp() * 1000)
+
+    params = {
+        "startDate": start_epoch,
+        "endDate": end_epoch,
+        "timezone": GHL_TIMEZONE,
+        "userId": "",  # empty = all users on the calendar
+    }
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{GHL_BASE}/calendars/{calendar_id}/free-slots",
+            headers=_headers(),
+            params=params,
+        )
+
+    if resp.status_code != 200:
+        logger.warning(
+            "GHL free-slots API returned non-200",
+            extra={"status": resp.status_code, "body": resp.text[:300]},
+        )
+        return []
+
+    data = resp.json()
+
+    # GHL returns: {"_dates_": {"2026-04-07": {"slots": ["2026-04-07T10:00:00-05:00", ...]}, ...}}
+    slots_by_date: dict[str, Any] = data.get("_dates_", {})
+
+    result: list[dict[str, Any]] = []
+    for date_str, date_data in sorted(slots_by_date.items()):
+        raw_slots = date_data.get("slots", [])
+        for iso_slot in raw_slots:
+            try:
+                dt = datetime.fromisoformat(iso_slot)
+                # Convert to local timezone for display
+                if dt.tzinfo is None:
+                    dt = tz.localize(dt)
+                else:
+                    dt = dt.astimezone(tz)
+                result.append({
+                    "date": dt.strftime("%A, %B %-d"),   # e.g. "Monday, April 7"
+                    "time": dt.strftime("%-I:%M %p"),     # e.g. "10:00 AM"
+                    "iso": iso_slot,                      # original ISO for booking
+                    "epoch_ms": int(dt.timestamp() * 1000),
+                })
+            except Exception:
+                continue
+            if len(result) >= 6:
+                break
+        if len(result) >= 6:
+            break
+
+    logger.info(
+        "check_availability returned slots",
+        extra={"calendar_id": calendar_id, "slot_count": len(result)},
+    )
+    return result
+
+
+async def create_appointment(
+    contact_id: str,
+    slot_iso: str,
+    caller_name: str,
+    caller_phone: str,
+    reason: str = "TaskDeskr Demo Consultation",
+    calendar_id: str = GHL_CALENDAR_ID,
+) -> dict[str, Any]:
+    """
+    Book an appointment in GHL for the given contact and time slot.
+
+    Args:
+        contact_id:   GHL contact ID.
+        slot_iso:     ISO datetime string of the selected slot (from check_availability).
+        caller_name:  Full name of the caller (used as appointment title).
+        caller_phone: Caller's phone number.
+        reason:       Reason for the appointment (shown in GHL calendar).
+        calendar_id:  GHL calendar ID to book into.
+
+    Returns:
+        The GHL appointment object dict on success.
+
+    Raises:
+        GHLError on API failure.
+    """
+    from datetime import datetime, timedelta
+
+    # Parse the slot to compute end time (30-min slot)
+    try:
+        start_dt = datetime.fromisoformat(slot_iso)
+        end_dt = start_dt + timedelta(minutes=30)
+        start_iso = start_dt.isoformat()
+        end_iso = end_dt.isoformat()
+    except Exception:
+        start_iso = slot_iso
+        end_iso = slot_iso  # GHL will use calendar default duration
+
+    payload: dict[str, Any] = {
+        "calendarId": calendar_id,
+        "locationId": settings.GHL_LOCATION_ID,
+        "contactId": contact_id,
+        "startTime": start_iso,
+        "endTime": end_iso,
+        "title": f"Demo Consultation — {caller_name}",
+        "appointmentStatus": "confirmed",
+        "address": caller_phone,
+        "notes": reason,
+        "ignoreDateRange": False,
+        "toNotify": True,
+    }
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{GHL_BASE}/calendars/events/appointments",
+            headers=_headers(),
+            json=payload,
+        )
+
+    _raise_for_status(resp, "create_appointment")
+
+    appt_data = resp.json()
+    logger.info(
+        "Appointment created",
+        extra={
+            "contact_id": contact_id,
+            "calendar_id": calendar_id,
+            "slot": slot_iso,
+            "appointment_id": appt_data.get("id", "unknown"),
+        },
+    )
+    return appt_data

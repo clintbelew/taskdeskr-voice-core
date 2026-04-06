@@ -14,8 +14,10 @@ Tool handlers:
   save_caller_info        → update contact name/email in GHL + tag
   save_lead_info          → write lead qualification fields to GHL contact
   create_lead_opportunity → create opportunity in Voice Bot Pipeline
+  check_availability      → fetch open calendar slots from GHL
+  create_appointment      → book the selected slot directly in GHL
   send_website_link       → SMS taskdeskr.com to the caller
-  send_demo_booking_link  → SMS the demo calendar booking link to the caller
+  send_demo_booking_link  → SMS the demo calendar booking link (fallback only)
   end_call                → signal Vapi to end the call
 """
 
@@ -87,6 +89,8 @@ async def dispatch(
         "save_caller_info":        _handle_save_caller_info,
         "save_lead_info":          _handle_save_lead_info,
         "create_lead_opportunity": _handle_create_lead_opportunity,
+        "check_availability":      _handle_check_availability,
+        "create_appointment":      _handle_create_appointment,
         "send_website_link":       _handle_send_website_link,
         "send_demo_booking_link":  _handle_send_demo_booking_link,
         "end_call":                _handle_end_call,
@@ -226,6 +230,181 @@ async def _handle_create_lead_opportunity(
             "Lead opportunity created in the Voice Bot Pipeline."
             if is_new else
             "Existing opportunity linked."
+        )
+    }
+
+
+async def _handle_check_availability(
+    args: dict[str, Any],
+    call_state: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Fetch open demo consultation slots from GHL and return them as a
+    human-readable list for Aria to read aloud.
+    """
+    from datetime import datetime, timedelta
+
+    preferred_date = args.get("preferred_date", "")
+    if not preferred_date:
+        # Default to tomorrow
+        preferred_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    try:
+        slots = await ghl.check_availability(preferred_date=preferred_date)
+    except Exception as exc:
+        logger.error("check_availability failed", extra={"error": str(exc)})
+        return {
+            "result": (
+                "I wasn't able to pull up the calendar right now. "
+                "Tell the caller you'll text them a booking link instead, "
+                "then call send_demo_booking_link."
+            )
+        }
+
+    if not slots:
+        return {
+            "result": (
+                "No available slots found for that date range. "
+                "Offer the caller the SMS booking link by calling send_demo_booking_link."
+            )
+        }
+
+    # Store slots in call state so create_appointment can validate the chosen slot
+    call_state["available_slots"] = slots
+
+    # Build a readable list for Aria to speak
+    lines = []
+    for i, slot in enumerate(slots, start=1):
+        lines.append(f"{i}. {slot['date']} at {slot['time']}")
+
+    slot_list = ", ".join(lines)
+    return {
+        "result": (
+            f"Here are the available slots: {slot_list}. "
+            f"Ask the caller which one works best for them. "
+            f"Once they confirm, call create_appointment with the slot_iso of their chosen slot."
+        )
+    }
+
+
+async def _handle_create_appointment(
+    args: dict[str, Any],
+    call_state: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Book the caller's chosen slot in GHL, confirm verbally, and send a
+    confirmation SMS with the date and time.
+    """
+    contact_id     = call_state.get("contact_id")
+    opportunity_id = call_state.get("opportunity_id")
+
+    slot_iso    = args.get("slot_iso", "")
+    caller_name = args.get("caller_name") or (
+        f"{call_state.get('caller_first_name', '')} "
+        f"{call_state.get('caller_last_name', '')}".strip() or "Caller"
+    )
+    reason = args.get("reason", "TaskDeskr Demo Consultation")
+
+    if not slot_iso:
+        return {
+            "result": (
+                "No time slot was provided. Ask the caller to confirm which slot they want, "
+                "then call create_appointment again with the slot_iso."
+            )
+        }
+
+    if not contact_id:
+        return {
+            "result": (
+                "Cannot book — caller contact not found in CRM. "
+                "Offer the SMS booking link instead."
+            )
+        }
+
+    # Ensure opportunity exists
+    if not opportunity_id:
+        opp_id, _ = await ghl.ensure_opportunity(
+            contact_id=contact_id,
+            contact_name=f"TaskDeskr Lead — {caller_name}",
+        )
+        opportunity_id = opp_id
+        call_state["opportunity_id"] = opp_id
+
+    # Book the appointment in GHL
+    try:
+        appt = await ghl.create_appointment(
+            contact_id=contact_id,
+            slot_iso=slot_iso,
+            caller_name=caller_name,
+            caller_phone=call_state.get("phone", ""),
+            reason=reason,
+        )
+        appt_id = appt.get("id", "")
+        call_state["appointment_id"] = appt_id
+    except ghl.GHLError as exc:
+        logger.error("create_appointment GHL error", extra={"error": str(exc), "status": exc.status_code})
+        return {
+            "result": (
+                "I wasn't able to book that slot — it may have just been taken. "
+                "Call check_availability again to get fresh slots, or offer the SMS booking link."
+            )
+        }
+
+    # Parse the slot for a human-readable confirmation
+    try:
+        from datetime import datetime
+        import pytz
+        tz = pytz.timezone("America/Chicago")
+        dt = datetime.fromisoformat(slot_iso)
+        if dt.tzinfo is None:
+            dt = tz.localize(dt)
+        else:
+            dt = dt.astimezone(tz)
+        readable_date = dt.strftime("%A, %B %-d")
+        readable_time = dt.strftime("%-I:%M %p")
+        readable_slot = f"{readable_date} at {readable_time} Central"
+    except Exception:
+        readable_slot = slot_iso
+
+    # Move opportunity stage to DEMO_BOOKED
+    if opportunity_id:
+        try:
+            await ghl.move_opportunity_stage(
+                opportunity_id=opportunity_id,
+                stage_id=GHLPipeline.Stages.BOOKING_LINK_SENT,
+            )
+        except Exception:
+            logger.warning("Could not move opportunity stage after booking")
+        call_state["pipeline_stage"] = "demo_booked"
+
+    # Tag the contact
+    try:
+        await ghl.add_tags(contact_id, ["demo-booked", "appointment-scheduled"])
+    except Exception:
+        pass
+
+    # Send confirmation SMS
+    sms_sent = False
+    first_name = call_state.get("caller_first_name", "").strip()
+    greeting   = f"Hi {first_name}! " if first_name else "Hi! "
+    sms_body   = (
+        f"{greeting}Your TaskDeskr demo consultation is confirmed for "
+        f"{readable_slot}. Our team will walk you through everything. "
+        f"Questions? Reply to this message. Reply STOP to opt out."
+    )
+    try:
+        await ghl.send_sms(contact_id=contact_id, message=sms_body)
+        sms_sent = True
+        logger.info("Appointment confirmation SMS sent", extra={"contact_id": contact_id})
+    except Exception as exc:
+        logger.warning("Could not send confirmation SMS", extra={"error": str(exc)})
+
+    sms_note = " I also just texted you a confirmation." if sms_sent else ""
+    return {
+        "result": (
+            f"Appointment booked successfully for {readable_slot}. "
+            f"Tell the caller: 'You're all set! Your demo consultation is confirmed for "
+            f"{readable_slot}.{sms_note} We look forward to speaking with you!'"
         )
     }
 
