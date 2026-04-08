@@ -152,7 +152,7 @@ async def _handle_assistant_request(
     # Return the full assistant config immediately
     return {
         "assistant": {
-            "name": "Aria — TaskDeskr AI Front Desk",
+            "name": "Aria — Task-Desk-R AI Front Desk",
             "model": {
                 "provider": "anthropic",
                 "model": "claude-sonnet-4-5-20250929",
@@ -175,8 +175,8 @@ async def _handle_assistant_request(
                     }
                 ],
             },
-            "firstMessage": "Thank you for calling TaskDeskr. This is Aria. How can I help you today?",
-            "endCallMessage": "Thank you for calling TaskDeskr. Have a wonderful day!",
+            "firstMessage": "Thank you for calling Task-Desk-R. This is Aria. How can I help you today?",
+            "endCallMessage": "Thank you for calling Task-Desk-R. Have a wonderful day!",
             "endCallPhrases": [
                 "goodbye", "bye bye", "talk later", "have a good day", "thank you bye"
             ],
