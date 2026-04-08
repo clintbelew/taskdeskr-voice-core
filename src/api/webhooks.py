@@ -163,9 +163,17 @@ async def _handle_assistant_request(
             "voice": {
                 "provider": "11labs",
                 "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — confirmed working
+                "model": "eleven_turbo_v2",  # Required for pronunciationDictionaryLocators
                 "stability": 0.5,
                 "similarityBoost": 0.75,
                 "useSpeakerBoost": True,
+                # Hard-locks TaskDeskr → "Task Desk R" at TTS phoneme level
+                "pronunciationDictionaryLocators": [
+                    {
+                        "pronunciationDictionaryId": "InGNi9u7u5B9APNnf5O0",
+                        "versionId": "XqlDLGp2yKsWI11aEFh2",
+                    }
+                ],
             },
             "firstMessage": "Thank you for calling TaskDeskr. This is Aria. How can I help you today?",
             "endCallMessage": "Thank you for calling TaskDeskr. Have a wonderful day!",
