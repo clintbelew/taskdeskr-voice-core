@@ -1,0 +1,7 @@
+GHL Calendar IDs for TaskDeskr sub-account (BsrmNxNTZZ6OsEosQFuo):
+
+1. Clint Belew Personal Calendar — ID: 5K0hLjasj81cHyeSK6Xn (Active, 30 min, Personal)
+2. New Patient Scheduling Template — ID: AewaSaTHTTYUBFqFJ9Yg (Active, 15 min, Personal)
+3. Third calendar — ID: ZIU1fcCPtqunLcVpPWx1 (need to check name)
+
+Primary calendar to use for demo bookings: 5K0hLjasj81cHyeSK6Xn (Clint Belew Personal Calendar)

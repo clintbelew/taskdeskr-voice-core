@@ -238,6 +238,21 @@ def build_assistant_config(system_prompt: str, tools: list[dict]) -> dict[str, A
             "stability": 0.5,
             "similarityBoost": 0.75,
             "useSpeakerBoost": True,
+            # Hard-lock pronunciation: TaskDeskr → "task desk r" (3 phonemes, no extra syllable)
+            "pronunciationDictionary": [
+                {
+                    "word": "TaskDeskr",
+                    "phoneme": "t ae s k d eh s k r",
+                    "alphabet": "ipa",
+                    "caseSensitive": False,
+                },
+                {
+                    "word": "taskdeskr",
+                    "phoneme": "t ae s k d eh s k r",
+                    "alphabet": "ipa",
+                    "caseSensitive": False,
+                },
+            ],
         },
         "transcriber": {
             "provider": "deepgram",
@@ -247,9 +262,9 @@ def build_assistant_config(system_prompt: str, tools: list[dict]) -> dict[str, A
             "endpointing": 300,
         },
         "firstMessage": (
-            "Thank you for calling Task Deskr. This is Aria. How can I help you today?"
+            "Thank you for calling TaskDeskr. This is Aria. How can I help you today?"
         ),
-        "endCallMessage": "Thank you for calling Task Deskr. Have a wonderful day!",
+        "endCallMessage": "Thank you for calling TaskDeskr. Have a wonderful day!",
         "endCallPhrases": [
             "goodbye", "bye bye", "talk later", "have a good day", "thank you bye"
         ],

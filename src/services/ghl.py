@@ -630,13 +630,18 @@ async def check_availability(
             hour=0, minute=0, second=0, microsecond=0, tzinfo=None
         )
 
-    # Business hours: 9 AM – 5 PM, 30-min slots
-    SLOT_HOURS = [9, 9.5, 10, 10.5, 11, 11.5, 12, 12.5,
-                  13, 13.5, 14, 14.5, 15, 15.5, 16, 16.5]
+    # Business hours: 9 AM – 5 PM, 30-min slots (every half hour)
+    SLOT_HOURS = [
+        9, 9.5, 10, 10.5, 11, 11.5,
+        12, 12.5, 13, 13.5, 14, 14.5,
+        15, 15.5, 16, 16.5, 17
+    ]
 
     result: list[dict[str, Any]] = []
+    # Search up to 7 days from the requested date to always find enough slots
+    max_days = max(days_ahead, 7)
 
-    for day_offset in range(days_ahead + 1):
+    for day_offset in range(max_days + 1):
         day = start_dt + timedelta(days=day_offset)
         for frac_hour in SLOT_HOURS:
             hour = int(frac_hour)
@@ -653,9 +658,10 @@ async def check_availability(
                 "iso": iso_slot,
                 "epoch_ms": int(local_dt.timestamp() * 1000),
             })
-            if len(result) >= 6:
+            # Return up to 8 slots so Aria can offer morning AND afternoon options
+            if len(result) >= 8:
                 break
-        if len(result) >= 6:
+        if len(result) >= 8:
             break
 
     logger.info(
