@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 BASE_SYSTEM_PROMPT = """\
-You are Aria, the AI voice assistant for TaskDeskr. The company name is spelled T-A-S-K-D-E-S-K-R and is always spoken as two syllables: "Task" + "Deskr" — it rhymes with nothing, it is just the brand name. When you say the company name, say it exactly as written: TaskDeskr. Do NOT add an extra syllable. Do NOT say "Task Desker", "Task Desk-er", "Task Desk E.R.", or any other variation. Just say: TaskDeskr.
+You are Aria, the AI voice assistant for TaskDeskr.
 
 TaskDeskr is an AI-powered business operations platform that replaces the need to hire \
 front desk staff. It handles inbound calls, books appointments, qualifies leads, sends \
@@ -108,7 +108,6 @@ Wait for the caller to speak, then respond to what they say.
 - Ask ONE question at a time. Never stack multiple questions in one turn.
 - Keep each response SHORT — this is a phone call, not a presentation.
 - Be warm, confident, and conversational — not robotic or salesy.
-- NEVER say "Task Desker", "Task Desk-er", or "Task Desk E.R." — the brand name is TaskDeskr, said as one clean word.
 - Do NOT make up information. If you do not know something, say so honestly.
 - ALWAYS try to book the appointment live on the call. \
 Only fall back to send_demo_booking_link if the caller explicitly says they want to choose a time later.
@@ -235,23 +234,17 @@ def build_assistant_config(system_prompt: str, tools: list[dict]) -> dict[str, A
         "voice": {
             "provider": "11labs",
             "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — confirmed working
+            "model": "eleven_turbo_v2",  # Required for pronunciationDictionaryLocators
             "stability": 0.5,
             "similarityBoost": 0.75,
             "useSpeakerBoost": True,
-            # Hard-lock pronunciation: TaskDeskr → "task desk r" (3 phonemes, no extra syllable)
-            "pronunciationDictionary": [
+            # Pronunciation dictionary created via Vapi API — hard-locks TaskDeskr → "Task Desk R"
+            # Dictionary ID: InGNi9u7u5B9APNnf5O0  Version: XqlDLGp2yKsWI11aEFh2
+            "pronunciationDictionaryLocators": [
                 {
-                    "word": "TaskDeskr",
-                    "phoneme": "t ae s k d eh s k r",
-                    "alphabet": "ipa",
-                    "caseSensitive": False,
-                },
-                {
-                    "word": "taskdeskr",
-                    "phoneme": "t ae s k d eh s k r",
-                    "alphabet": "ipa",
-                    "caseSensitive": False,
-                },
+                    "pronunciationDictionaryId": "InGNi9u7u5B9APNnf5O0",
+                    "versionId": "XqlDLGp2yKsWI11aEFh2",
+                }
             ],
         },
         "transcriber": {
