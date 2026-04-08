@@ -163,15 +163,15 @@ async def _handle_assistant_request(
             "voice": {
                 "provider": "11labs",
                 "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — confirmed working
-                "model": "eleven_turbo_v2",  # Required for pronunciationDictionaryLocators
+                "model": "eleven_turbo_v2_5",  # Required for phoneme pronunciationDictionaryLocators
                 "stability": 0.5,
                 "similarityBoost": 0.75,
                 "useSpeakerBoost": True,
-                # Hard-locks TaskDeskr → "Task Desk R" at TTS phoneme level
+                # IPA phoneme rule v2: TaskDeskr → /ˈtæsk.dɛskɑːr/
                 "pronunciationDictionaryLocators": [
                     {
                         "pronunciationDictionaryId": "InGNi9u7u5B9APNnf5O0",
-                        "versionId": "XqlDLGp2yKsWI11aEFh2",
+                        "versionId": "2loS67znqtGFapR27M6o",
                     }
                 ],
             },
