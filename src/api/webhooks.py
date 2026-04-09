@@ -152,7 +152,7 @@ async def _handle_assistant_request(
     # Return the full assistant config immediately
     return {
         "assistant": {
-            "name": "Aria — Task-Desk-R AI Front Desk",
+            "name": "Aria — TaskDeskr AI Front Desk",
             "model": {
                 "provider": "anthropic",
                 "model": "claude-sonnet-4-5-20250929",
@@ -163,20 +163,13 @@ async def _handle_assistant_request(
             "voice": {
                 "provider": "11labs",
                 "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — confirmed working
-                "model": "eleven_turbo_v2_5",  # Required for phoneme pronunciationDictionaryLocators
                 "stability": 0.5,
                 "similarityBoost": 0.75,
                 "useSpeakerBoost": True,
-                # IPA phoneme rule v2: TaskDeskr → /ˈtæsk.dɛskɑːr/
-                "pronunciationDictionaryLocators": [
-                    {
-                        "pronunciationDictionaryId": "InGNi9u7u5B9APNnf5O0",
-                        "versionId": "2loS67znqtGFapR27M6o",
-                    }
-                ],
+                # No pronunciation dictionary — ElevenLabs reads 'TaskDeskr' correctly natively
             },
-            "firstMessage": "Thank you for calling Task-Desk-R. This is Aria. How can I help you today?",
-            "endCallMessage": "Thank you for calling Task-Desk-R. Have a wonderful day!",
+            "firstMessage": "Thank you for calling TaskDeskr. This is Aria. How can I help you today?",
+            "endCallMessage": "Thank you for calling TaskDeskr. Have a wonderful day!",
             "endCallPhrases": [
                 "goodbye", "bye bye", "talk later", "have a good day", "thank you bye"
             ],
