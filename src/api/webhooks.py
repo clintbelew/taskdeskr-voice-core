@@ -152,7 +152,7 @@ async def _handle_assistant_request(
     # Return the full assistant config immediately
     return {
         "assistant": {
-            "name": "Aria — TaskDeskr AI Front Desk",
+            "name": "Aria — TaskDesker AI Voice Rep",
             "model": {
                 "provider": "anthropic",
                 "model": "claude-sonnet-4-5-20250929",
@@ -168,8 +168,8 @@ async def _handle_assistant_request(
                 "useSpeakerBoost": True,
                 # No pronunciation dictionary — ElevenLabs reads 'TaskDeskr' correctly natively
             },
-            "firstMessage": "Thank you for calling TaskDeskr. This is Aria. How can I help you today?",
-            "endCallMessage": "Thank you for calling TaskDeskr. Have a wonderful day!",
+            "firstMessage": "Thank you for calling TaskDesker. This is Aria. How can I help you today?",
+            "endCallMessage": "Thank you for calling TaskDesker. Have a wonderful day!",
             "endCallPhrases": [
                 "goodbye", "bye bye", "talk later", "have a good day", "thank you bye"
             ],
@@ -266,34 +266,14 @@ async def _handle_function_call(
     call_id: str,
 ) -> dict[str, Any]:
     """
-    Execute a tool call requested by the LLM and return the result.
+    Execute tool call(s) requested by the LLM and return all results.
     Handles both legacy "function-call" and current "tool-calls" event types.
-    Returns results in Vapi's expected format: {"results": [{"toolCallId": X, "result": Y}]}
+    Supports parallel tool calls — Claude sometimes fires multiple tools simultaneously.
+    Returns results in Vapi's expected format: {"results": [{"toolCallId": X, "result": Y}, ...]}
     """
-    # Support both legacy function-call format and current tool-calls format
-    tool_call_list = message.get("toolCallList", [])
-    if tool_call_list:
-        # New Vapi format: tool-calls event with toolCallList array
-        # Vapi structure: {id, type, function: {name, arguments}}
-        tool_call    = tool_call_list[0]
-        tool_call_id = tool_call.get("id", "")
-        func_obj     = tool_call.get("function", {})
-        tool_name    = func_obj.get("name", tool_call.get("name", ""))
-        arguments    = func_obj.get("arguments", tool_call.get("arguments", "{}"))
-        if isinstance(arguments, dict):
-            arguments = json.dumps(arguments)
-    else:
-        # Legacy function-call format
-        func_call    = message.get("functionCall", {})
-        tool_call_id = func_call.get("id", "")
-        tool_name    = func_call.get("name", "")
-        arguments    = func_call.get("parameters", "{}")
-        if isinstance(arguments, dict):
-            arguments = json.dumps(arguments)
+    import asyncio
 
-    logger.info("Executing tool call", extra={"tool": tool_name})
-
-    # Load state from Redis
+    # Load state from Redis once (shared across all parallel tool calls)
     state = await call_state.get(call_id)
 
     # Edge case: state is empty (pre-built assistant, no assistant-request fired)
@@ -324,30 +304,60 @@ async def _handle_function_call(
         if phone_from_call:
             state = await call_state.update(call_id, {"phone": phone_from_call})
 
-    result = await dispatcher.dispatch(
-        tool_name=tool_name,
-        arguments_json=arguments,
-        contact_id=state.get("contact_id"),
-        phone=state.get("phone"),
-        call_state=state,
+    # Build list of (tool_call_id, tool_name, arguments) tuples to execute
+    tool_call_list = message.get("toolCallList", [])
+    if tool_call_list:
+        # Current Vapi format: toolCallList array (may contain multiple parallel calls)
+        calls_to_run = []
+        for tc in tool_call_list:
+            tc_id    = tc.get("id", "")
+            func_obj = tc.get("function", {})
+            tc_name  = func_obj.get("name", tc.get("name", ""))
+            tc_args  = func_obj.get("arguments", tc.get("arguments", "{}"))
+            if isinstance(tc_args, dict):
+                tc_args = json.dumps(tc_args)
+            calls_to_run.append((tc_id, tc_name, tc_args))
+    else:
+        # Legacy function-call format (single call)
+        func_call = message.get("functionCall", {})
+        tc_id     = func_call.get("id", "")
+        tc_name   = func_call.get("name", "")
+        tc_args   = func_call.get("parameters", "{}")
+        if isinstance(tc_args, dict):
+            tc_args = json.dumps(tc_args)
+        calls_to_run = [(tc_id, tc_name, tc_args)]
+
+    logger.info(
+        "Executing tool call(s)",
+        extra={"tools": [c[1] for c in calls_to_run], "count": len(calls_to_run)},
     )
+
+    # Execute all tool calls (sequentially to avoid race conditions on shared state)
+    results = []
+    end_call_action = None
+    for tc_id, tc_name, tc_args in calls_to_run:
+        result = await dispatcher.dispatch(
+            tool_name=tc_name,
+            arguments_json=tc_args,
+            contact_id=state.get("contact_id"),
+            phone=state.get("phone"),
+            call_state=state,
+        )
+        result_text = result.get("result", str(result))
+        results.append({"toolCallId": tc_id, "result": result_text})
+        # Check for end-call action
+        action = result.get("action", {})
+        if isinstance(action, dict) and action.get("type") == "end-call":
+            end_call_action = {"type": "end-call"}
 
     # Persist any state mutations back to Redis
     await call_state.set(call_id, state)
 
-    # Handle Vapi flow control actions
-    action      = result.get("action", {})
-    action_type = action.get("type", "") if isinstance(action, dict) else ""
-    result_text = result.get("result", str(result))
-
-    if action_type == "end-call":
-        return {
-            "results": [{"toolCallId": tool_call_id, "result": result_text}],
-            "action": {"type": "end-call"},
-        }
-
-    # Vapi expects: {"results": [{"toolCallId": "<id>", "result": "<text>"}]}
-    return {"results": [{"toolCallId": tool_call_id, "result": result_text}]}
+    # Return all results; include end-call action if any tool triggered it
+    response = {"results": results}
+    if end_call_action:
+        response["action"] = end_call_action
+    return response
 
 
 async def _handle_end_of_call(
