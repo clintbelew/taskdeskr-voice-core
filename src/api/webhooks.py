@@ -152,7 +152,7 @@ async def _handle_assistant_request(
     # Return the full assistant config immediately
     return {
         "assistant": {
-            "name": "Aria — TaskDesker AI Voice Rep",
+            "name": "TaskDesker AI Operations",
             "model": {
                 "provider": "anthropic",
                 "model": "claude-sonnet-4-5-20250929",
@@ -168,8 +168,8 @@ async def _handle_assistant_request(
                 "useSpeakerBoost": True,
                 # No pronunciation dictionary — ElevenLabs reads 'TaskDeskr' correctly natively
             },
-            "firstMessage": "Thank you for calling TaskDesker. This is Aria. How can I help you today?",
-            "endCallMessage": "Thank you for calling TaskDesker. Have a wonderful day!",
+            "firstMessage": "Hey, this is TaskDesker. I help manage calls, scheduling, and follow-ups for the team. What can I help you get taken care of today?",
+            "endCallMessage": "I've got everything noted. You're all set — talk soon.",
             "endCallPhrases": [
                 "goodbye", "bye bye", "talk later", "have a good day", "thank you bye"
             ],
@@ -466,16 +466,16 @@ def _build_greeting(contact: Optional[dict[str, Any]]) -> str:
     """Build a personalised opening greeting based on CRM data."""
     if not contact:
         return (
-            "Thank you for calling! This is Aria, your AI front desk assistant. "
-            "How can I help you today?"
+            "Hey, this is TaskDesker. I help manage calls, scheduling, and follow-ups for the team. "
+            "What can I help you get taken care of today?"
         )
     first_name = contact.get("firstName", "")
     if first_name:
         return (
-            f"Hi {first_name}! Thanks for calling. This is Aria. "
-            "How can I help you today?"
+            f"Hey {first_name}, this is TaskDesker. I help manage calls, scheduling, and follow-ups for the team. "
+            "What can I help you get taken care of today?"
         )
     return (
-        "Thank you for calling! This is Aria, your AI front desk assistant. "
-        "How can I help you today?"
+        "Hey, this is TaskDesker. I help manage calls, scheduling, and follow-ups for the team. "
+        "What can I help you get taken care of today?"
     )
