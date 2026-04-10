@@ -152,7 +152,7 @@ async def _handle_assistant_request(
     # Return the full assistant config immediately
     return {
         "assistant": {
-            "name": "Aria — TaskDeskrr AI Front Desk",
+            "name": "Aria — TaskDeskr AI Front Desk",
             "model": {
                 "provider": "anthropic",
                 "model": "claude-sonnet-4-5-20250929",
@@ -168,8 +168,8 @@ async def _handle_assistant_request(
                 "useSpeakerBoost": True,
                 # No pronunciation dictionary — ElevenLabs reads 'TaskDeskr' correctly natively
             },
-            "firstMessage": "Thank you for calling TaskDeskrr. This is Aria. How can I help you today?",
-            "endCallMessage": "Thank you for calling TaskDeskrr. Have a wonderful day!",
+            "firstMessage": "Thank you for calling TaskDeskr. This is Aria. How can I help you today?",
+            "endCallMessage": "Thank you for calling TaskDeskr. Have a wonderful day!",
             "endCallPhrases": [
                 "goodbye", "bye bye", "talk later", "have a good day", "thank you bye"
             ],
