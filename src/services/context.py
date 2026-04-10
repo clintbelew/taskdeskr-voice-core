@@ -1,5 +1,5 @@
 """
-TaskDesker Voice Core — Context Builder
+TaskDeskr Voice Core — Context Builder
 =======================================
 Builds the system prompt and Vapi assistant configuration for each call.
 
@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Base Persona — TaskDesker AI Operations Assistant
+# Base Persona — TaskDeskr AI Operations Assistant
 # ─────────────────────────────────────────────────────────────────────────────
 BASE_SYSTEM_PROMPT = """\
 BRAND NAME RULE — READ THIS FIRST:
@@ -252,7 +252,7 @@ def build_assistant_config(system_prompt: str, tools: list[dict]) -> dict[str, A
     This function is kept for reference / future refactoring.
     """
     return {
-        "name": "TaskDesker AI Operations",
+        "name": "TaskDeskr AI Operations",
         "model": {
             "provider": "anthropic",
             "model": settings.ANTHROPIC_MODEL,

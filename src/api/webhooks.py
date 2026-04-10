@@ -152,7 +152,7 @@ async def _handle_assistant_request(
     # Return the full assistant config immediately
     return {
         "assistant": {
-            "name": "TaskDesker AI Operations",
+            "name": "TaskDeskr AI Operations",
             "model": {
                 "provider": "anthropic",
                 "model": "claude-sonnet-4-5-20250929",

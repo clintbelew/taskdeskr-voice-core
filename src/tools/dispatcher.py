@@ -303,7 +303,7 @@ async def _handle_create_appointment(
         f"{call_state.get('caller_first_name', '')} "
         f"{call_state.get('caller_last_name', '')}".strip() or "Caller"
     )
-    reason = args.get("reason", "TaskDesker Demo Consultation")
+    reason = args.get("reason", "TaskDeskr Demo Consultation")
 
     if not slot_iso:
         return {
@@ -388,7 +388,7 @@ async def _handle_create_appointment(
     first_name = call_state.get("caller_first_name", "").strip()
     greeting   = f"Hi {first_name}! " if first_name else "Hi! "
     sms_body   = (
-        f"{greeting}Your TaskDesker demo consultation is confirmed for "
+        f"{greeting}Your TaskDeskr demo consultation is confirmed for "
         f"{readable_slot}. Our team will walk you through everything. "
         f"Questions? Reply to this message. Reply STOP to opt out."
     )
@@ -443,7 +443,7 @@ async def _handle_send_website_link(
         first_name = call_state.get("caller_first_name", "").strip()
         greeting   = f"Hi {first_name}! " if first_name else "Hi! "
         sms_body   = (
-            f"{greeting}Here's the TaskDesker website: {TASKDESKR_WEBSITE_URL} — "
+            f"{greeting}Here's the TaskDeskr website: {TASKDESKR_WEBSITE_URL} — "
             f"AI-powered business operations that replaces hiring front desk staff. "
             f"Reply STOP to opt out."
         )
@@ -507,7 +507,7 @@ async def _handle_send_demo_booking_link(
         greeting      = f"Hi {first_name}! " if first_name else "Hi! "
         time_note     = f" (you mentioned {preferred_time} works for you)" if preferred_time else ""
         sms_body      = (
-            f"{greeting}Here's the link to book your TaskDesker demo call{time_note}: "
+            f"{greeting}Here's the link to book your TaskDeskr demo call{time_note}: "
             f"{DEMO_BOOKING_LINK_URL} — Pick a time that works for you and our team will walk you through everything. "
             f"Reply STOP to opt out."
         )
@@ -543,7 +543,7 @@ async def _handle_end_call(
     call_state["end_reason"] = reason
     logger.info("End call requested by LLM", extra={"reason": reason})
     return {
-        "result": "Thank you for calling TaskDesker. Have a great day!",
+        "result": "Thank you for calling TaskDeskr. Have a great day!",
         "action": {"type": "end-call"},
     }
 

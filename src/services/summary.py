@@ -1,5 +1,5 @@
 """
-TaskDesker Voice Core — Call Summary Service
+TaskDeskr Voice Core — Call Summary Service
 =============================================
 Generates a structured summary at the end of each call using the LLM,
 then pushes it back to GoHighLevel as a contact note.
@@ -96,7 +96,7 @@ _SUMMARY_TOOL = {
     },
 }
 
-_SUMMARY_SYSTEM = """You are a call analyst for TaskDesker, an AI operations platform. \
+_SUMMARY_SYSTEM = """You are a call analyst for TaskDeskr, an AI operations platform. \
 Given a voice call transcript, you MUST call the submit_call_summary tool with a structured summary.
 
 Extract exactly these fields:
@@ -213,7 +213,7 @@ def _empty_summary(call_id: str) -> dict[str, Any]:
 def _format_note(summary: dict[str, Any], call_id: str) -> str:
     """Format the summary dict into a human-readable GHL note."""
     lines = [
-        f"📞 TASKDESKER CALL SUMMARY",
+        f"📞 TASKDESKR CALL SUMMARY",
         f"Call ID: {call_id}",
         "",
         f"Caller Type:       {summary.get('caller_type', 'other').replace('_', ' ').title()}",
