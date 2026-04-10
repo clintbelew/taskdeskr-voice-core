@@ -1,16 +1,19 @@
 """
-TaskDeskr Voice Core — Call Summary Service
+TaskDesker Voice Core — Call Summary Service
 =============================================
 Generates a structured summary at the end of each call using the LLM,
 then pushes it back to GoHighLevel as a contact note.
 
-The summary includes:
-  - Call outcome (booked, escalated, no action, callback needed, etc.)
-  - Key topics discussed
-  - Actions taken during the call
-  - Follow-up tasks
-  - Sentiment assessment
-  - Raw transcript excerpt
+Summary fields (9 total):
+  1. caller_type       — new lead / existing customer / support / urgent / other
+  2. reason_for_call   — what the caller needed
+  3. urgency_level     — low / medium / high
+  4. action_taken      — what was done during the call
+  5. follow_up_required — yes / no
+  6. route_to          — who should handle next
+  7. appointment_details — if any booking was made
+  8. promised_next_step — what the caller was told would happen
+  9. overall_summary   — one-paragraph human-readable summary
 """
 
 from __future__ import annotations
@@ -32,59 +35,80 @@ _SUMMARY_TOOL = {
         "description": "Submit a structured summary of the completed call.",
         "parameters": {
             "type": "object",
-            "required": ["outcome", "topics", "actions_taken", "follow_up", "sentiment"],
+            "required": [
+                "caller_type",
+                "reason_for_call",
+                "urgency_level",
+                "action_taken",
+                "follow_up_required",
+                "route_to",
+                "promised_next_step",
+                "overall_summary",
+            ],
             "properties": {
-                "outcome": {
+                "caller_type": {
                     "type": "string",
                     "enum": [
-                        "appointment_booked",
-                        "escalated_to_human",
-                        "information_provided",
-                        "callback_scheduled",
-                        "no_action",
-                        "voicemail",
+                        "new_lead",
+                        "existing_customer",
+                        "support",
+                        "urgent",
                         "other",
                     ],
-                    "description": "Primary outcome of the call.",
+                    "description": "Type of caller based on their intent and history.",
                 },
-                "topics": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Key topics or questions raised during the call.",
-                },
-                "actions_taken": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of actions executed (e.g. 'Booked appointment for 2026-04-01 at 2pm').",
-                },
-                "follow_up": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Pending tasks or follow-up items for the team.",
-                },
-                "sentiment": {
+                "reason_for_call": {
                     "type": "string",
-                    "enum": ["positive", "neutral", "negative", "frustrated"],
-                    "description": "Overall caller sentiment.",
+                    "description": "Brief description of why the caller called (1-2 sentences).",
                 },
-                "summary_text": {
+                "urgency_level": {
                     "type": "string",
-                    "description": "One-paragraph human-readable summary of the call.",
+                    "enum": ["low", "medium", "high"],
+                    "description": "Urgency level of the caller's need.",
+                },
+                "action_taken": {
+                    "type": "string",
+                    "description": "What was done during the call (e.g. 'Booked demo for April 12 at 2pm', 'Sent booking link via SMS', 'Collected lead info').",
+                },
+                "follow_up_required": {
+                    "type": "string",
+                    "enum": ["yes", "no"],
+                    "description": "Whether the team needs to follow up after this call.",
+                },
+                "route_to": {
+                    "type": "string",
+                    "description": "Who should handle the next step (e.g. 'Sales team', 'Demo team', 'Support', 'No routing needed').",
+                },
+                "appointment_details": {
+                    "type": "string",
+                    "description": "Appointment date, time, and type if a booking was made. Leave blank if no appointment was booked.",
+                },
+                "promised_next_step": {
+                    "type": "string",
+                    "description": "Exactly what the caller was told would happen next (e.g. 'Confirmation text sent', 'Team will call back within 24 hours', 'Booking link sent via SMS').",
+                },
+                "overall_summary": {
+                    "type": "string",
+                    "description": "One-paragraph human-readable summary of the full call — what happened, what was resolved, and what is pending.",
                 },
             },
         },
     },
 }
 
-_SUMMARY_SYSTEM = """You are a call analyst. Given a voice call transcript, you MUST call the submit_call_summary tool with a structured summary.
+_SUMMARY_SYSTEM = """You are a call analyst for TaskDesker, an AI operations platform. \
+Given a voice call transcript, you MUST call the submit_call_summary tool with a structured summary.
 
-Extract:
-- outcome: what happened (appointment_booked, information_provided, no_action, etc.)
-- topics: key topics discussed (e.g. back pain, insurance, scheduling)
-- actions_taken: what was done (e.g. sent booking link, collected insurance info)
-- follow_up: any pending tasks for the team
-- sentiment: caller's mood (positive, neutral, negative, frustrated)
-- summary_text: one paragraph describing the call
+Extract exactly these fields:
+- caller_type: new_lead / existing_customer / support / urgent / other
+- reason_for_call: why they called (1-2 sentences)
+- urgency_level: low / medium / high
+- action_taken: what was done on the call (booking, link sent, info provided, etc.)
+- follow_up_required: yes / no
+- route_to: who handles next (Sales team, Demo team, Support, No routing needed, etc.)
+- appointment_details: date/time/type if booked, blank if not
+- promised_next_step: exactly what the caller was told would happen next
+- overall_summary: one paragraph describing the full call
 
 Be factual and concise. Only use information present in the transcript. You MUST call the tool."""
 
@@ -115,7 +139,6 @@ async def generate_and_save_summary(
 
     logger.info("Generating call summary", extra={"call_id": call_id})
 
-    # Use Anthropic for summarization (Claude is the configured LLM provider)
     result = await router.complete(
         messages=transcript,
         system_prompt=_SUMMARY_SYSTEM,
@@ -159,12 +182,15 @@ def _parse_summary(llm_result: dict[str, Any], call_id: str) -> dict[str, Any]:
     # Fallback: use raw content if tool call was not triggered
     return {
         "call_id": call_id,
-        "outcome": "other",
-        "topics": [],
-        "actions_taken": [],
-        "follow_up": [],
-        "sentiment": "neutral",
-        "summary_text": llm_result.get("content", "Summary unavailable."),
+        "caller_type": "other",
+        "reason_for_call": "Unknown",
+        "urgency_level": "low",
+        "action_taken": "None",
+        "follow_up_required": "no",
+        "route_to": "No routing needed",
+        "appointment_details": "",
+        "promised_next_step": "None",
+        "overall_summary": llm_result.get("content", "Summary unavailable."),
         "provider": llm_result.get("provider"),
     }
 
@@ -172,37 +198,38 @@ def _parse_summary(llm_result: dict[str, Any], call_id: str) -> dict[str, Any]:
 def _empty_summary(call_id: str) -> dict[str, Any]:
     return {
         "call_id": call_id,
-        "outcome": "no_action",
-        "topics": [],
-        "actions_taken": [],
-        "follow_up": [],
-        "sentiment": "neutral",
-        "summary_text": "No transcript available.",
+        "caller_type": "other",
+        "reason_for_call": "No transcript available.",
+        "urgency_level": "low",
+        "action_taken": "None",
+        "follow_up_required": "no",
+        "route_to": "No routing needed",
+        "appointment_details": "",
+        "promised_next_step": "None",
+        "overall_summary": "No transcript available.",
     }
 
 
 def _format_note(summary: dict[str, Any], call_id: str) -> str:
     """Format the summary dict into a human-readable GHL note."""
     lines = [
-        f"📞 CALL SUMMARY — {call_id}",
-        f"Outcome: {summary.get('outcome', 'unknown').replace('_', ' ').title()}",
-        f"Sentiment: {summary.get('sentiment', 'neutral').title()}",
+        f"📞 TASKDESKER CALL SUMMARY",
+        f"Call ID: {call_id}",
+        "",
+        f"Caller Type:       {summary.get('caller_type', 'other').replace('_', ' ').title()}",
+        f"Reason for Call:   {summary.get('reason_for_call', 'Unknown')}",
+        f"Urgency Level:     {summary.get('urgency_level', 'low').title()}",
+        f"Action Taken:      {summary.get('action_taken', 'None')}",
+        f"Follow-Up Required:{summary.get('follow_up_required', 'no').title()}",
+        f"Route To:          {summary.get('route_to', 'No routing needed')}",
     ]
 
-    if topics := summary.get("topics"):
-        lines.append(f"Topics: {', '.join(topics)}")
+    if appt := summary.get("appointment_details"):
+        lines.append(f"Appointment:       {appt}")
 
-    if actions := summary.get("actions_taken"):
-        lines.append("Actions Taken:")
-        for a in actions:
-            lines.append(f"  • {a}")
+    lines.append(f"Promised Next Step:{summary.get('promised_next_step', 'None')}")
 
-    if follow_up := summary.get("follow_up"):
-        lines.append("Follow-Up:")
-        for f in follow_up:
-            lines.append(f"  • {f}")
-
-    if text := summary.get("summary_text"):
-        lines += ["", text]
+    if text := summary.get("overall_summary"):
+        lines += ["", "─" * 40, text]
 
     return "\n".join(lines)
