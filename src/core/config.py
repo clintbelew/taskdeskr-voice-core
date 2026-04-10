@@ -36,13 +36,13 @@ class Settings(BaseSettings):
     VAPI_WEBHOOK_SECRET: str = Field(default="", description="Vapi webhook signing secret")
 
     # ── LLM Providers ─────────────────────────────────────────────────────────
-    OPENAI_API_KEY: str = Field(..., description="OpenAI API key")
+    OPENAI_API_KEY: str = Field(default="", description="OpenAI API key (optional — not used when DEFAULT_LLM_PROVIDER=anthropic)")
     ANTHROPIC_API_KEY: str = Field(default="", description="Anthropic Claude API key")
 
     DEFAULT_LLM_PROVIDER: Literal["openai", "anthropic", "auto"] = "anthropic"
     OPENAI_MODEL: str = "gpt-4.1-mini"
     ANTHROPIC_MODEL: str = "claude-sonnet-4-5-20250929"         # Conversation model (low latency)
-    ANTHROPIC_SUMMARY_MODEL: str = "claude-opus-4-20250514"    # Summary/analysis model (high quality)
+    ANTHROPIC_SUMMARY_MODEL: str = "claude-opus-4-5"    # Summary/analysis model (high quality)
 
     # ── GoHighLevel ───────────────────────────────────────────────────────────
     GHL_API_KEY: str = Field(..., description="GoHighLevel Bearer token (v2 Private Integration Key)")
@@ -88,8 +88,9 @@ class GHLCalendars:
     EXISTING_PATIENT   = "ZIU1fcCPtqunLcVpPWx1"   # Existing Patient Scheduling Template
     NEW_PATIENT        = "AewaSaTHTTYUBFqFJ9Yg"    # New Patient Scheduling Template
 
-    # Default calendar for Phase 1 (new inbound leads)
-    DEFAULT = NEW_PATIENT
+    # Default calendar for Phase 1 (new inbound leads / demo bookings)
+    # Must match GHL_CALENDAR_ID in ghl.py — both point to Clint's Personal Calendar
+    DEFAULT = PERSONAL
 
 
 class GHLCustomFields:

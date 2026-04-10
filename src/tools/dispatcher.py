@@ -366,16 +366,16 @@ async def _handle_create_appointment(
     except Exception:
         readable_slot = slot_iso
 
-    # Move opportunity stage to DEMO_BOOKED
+    # Move opportunity stage to APPOINTMENT_BOOKED
     if opportunity_id:
         try:
             await ghl.move_opportunity_stage(
                 opportunity_id=opportunity_id,
-                stage_id=GHLPipeline.Stages.BOOKING_LINK_SENT,
+                stage_id=GHLPipeline.Stages.APPOINTMENT_BOOKED,
             )
         except Exception:
             logger.warning("Could not move opportunity stage after booking")
-        call_state["pipeline_stage"] = "demo_booked"
+        call_state["pipeline_stage"] = "appointment_booked"
 
     # Tag the contact
     try:
