@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     GHL_API_KEY: str = Field(..., description="GoHighLevel Bearer token (v2 Private Integration Key)")
     GHL_LOCATION_ID: str = Field(default="BsrmNxNTZZ6OsEosQFuo", description="GHL Location ID")
     GHL_TIMEZONE: str = "America/Chicago"
+    GHL_SMS_FROM_NUMBER: str = Field(default="+12108995511", description="GHL approved phone number for outbound SMS")
 
     # ── Redis ─────────────────────────────────────────────────────────────────
     REDIS_URL: str = Field(

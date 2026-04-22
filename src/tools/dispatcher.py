@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from src.core.config import GHLPipeline
+from src.core.config import GHLPipeline, settings
 from src.core.logger import get_logger
 from src.services import ghl
 
@@ -393,7 +393,7 @@ async def _handle_create_appointment(
         f"Questions? Reply to this message. Reply STOP to opt out."
     )
     try:
-        await ghl.send_sms(contact_id=contact_id, message=sms_body)
+        await ghl.send_sms(contact_id=contact_id, message=sms_body, from_number=settings.GHL_SMS_FROM_NUMBER)
         sms_sent = True
         logger.info("Appointment confirmation SMS sent", extra={"contact_id": contact_id})
     except Exception as exc:
@@ -448,7 +448,7 @@ async def _handle_send_website_link(
             f"Reply STOP to opt out."
         )
         try:
-            await ghl.send_sms(contact_id=contact_id, message=sms_body)
+            await ghl.send_sms(contact_id=contact_id, message=sms_body, from_number=settings.GHL_SMS_FROM_NUMBER)
             sms_sent = True
             logger.info("Website link SMS sent", extra={"contact_id": contact_id})
         except ghl.GHLError as exc:
@@ -512,7 +512,7 @@ async def _handle_send_demo_booking_link(
             f"Reply STOP to opt out."
         )
         try:
-            await ghl.send_sms(contact_id=contact_id, message=sms_body)
+            await ghl.send_sms(contact_id=contact_id, message=sms_body, from_number=settings.GHL_SMS_FROM_NUMBER)
             sms_sent = True
             logger.info("Demo booking link SMS sent", extra={"contact_id": contact_id})
         except ghl.GHLError as exc:
