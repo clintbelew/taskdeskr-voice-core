@@ -158,15 +158,16 @@ async def _handle_assistant_request(
                 "model": "claude-sonnet-4-5-20250929",
                 "systemPrompt": system_prompt,
                 "tools": TOOL_DEFINITIONS,
-                "temperature": 0.4,
+                "temperature": 0.7,  # raised: more natural, less scripted-sounding
             },
             "voice": {
                 "provider": "11labs",
-                "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — confirmed working
-                "stability": 0.5,
+                "voiceId": "g6xIsTj2HwM6VR4iXFCw",  # Jessica Anne Bogart — conversational, warm
+                "model": "eleven_flash_v2_5",          # CRITICAL fix: was missing, defaulting to old v1 model
+                "stability": 0.38,                     # lowered: more dynamic, less monotone
                 "similarityBoost": 0.75,
+                "style": 0.35,                         # added: expressiveness/emotion variance
                 "useSpeakerBoost": True,
-                # No pronunciation dictionary — ElevenLabs reads 'TaskDeskr' correctly natively
             },
             "firstMessage": "Hey, this is TaskDesker. I help manage calls, scheduling, and follow-ups for the team. What can I help you get taken care of today?",
             "endCallMessage": "I've got everything noted. You're all set — talk soon.",

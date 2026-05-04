@@ -270,13 +270,15 @@ def build_assistant_config(system_prompt: str, tools: list[dict]) -> dict[str, A
             "model": settings.ANTHROPIC_MODEL,
             "systemPrompt": system_prompt,
             "tools": tools,
-            "temperature": 0.4,
+            "temperature": 0.7,  # raised: more natural, less scripted-sounding
         },
         "voice": {
             "provider": "11labs",
-            "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — confirmed working
-            "stability": 0.5,
+            "voiceId": "g6xIsTj2HwM6VR4iXFCw",  # Jessica Anne Bogart — conversational, warm
+            "model": "eleven_flash_v2_5",          # CRITICAL fix: was missing, defaulting to old v1 model
+            "stability": 0.38,                     # lowered: more dynamic, less monotone
             "similarityBoost": 0.75,
+            "style": 0.35,                         # added: expressiveness/emotion variance
             "useSpeakerBoost": True,
         },
         "transcriber": {
