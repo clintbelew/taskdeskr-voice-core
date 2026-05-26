@@ -155,7 +155,7 @@ async def _handle_assistant_request(
             "name": "TaskDeskr AI Operations",
             "model": {
                 "provider": "anthropic",
-                "model": "claude-haiku-4-5",  # LATENCY FIX: Haiku is 3-4x faster than Sonnet for voice turns (~300ms vs ~900ms)
+                "model": "claude-haiku-4-5-20251029",  # LATENCY FIX: Haiku is 3-4x faster than Sonnet for voice turns (~300ms vs ~900ms)
                 "systemPrompt": system_prompt,
                 "tools": TOOL_DEFINITIONS,
                 "temperature": 0.7,

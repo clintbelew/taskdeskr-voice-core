@@ -41,7 +41,7 @@ class Settings(BaseSettings):
 
     DEFAULT_LLM_PROVIDER: Literal["openai", "anthropic", "auto"] = "anthropic"
     OPENAI_MODEL: str = "gpt-4.1-mini"
-    ANTHROPIC_MODEL: str = "claude-sonnet-4-5-20250929"         # Conversation model (low latency)
+    ANTHROPIC_MODEL: str = "claude-haiku-4-5-20251029"         # Conversation model (low latency — Haiku is 3-4x faster than Sonnet)
     ANTHROPIC_SUMMARY_MODEL: str = "claude-opus-4-5"    # Summary/analysis model (high quality)
 
     # ── GoHighLevel ───────────────────────────────────────────────────────────
