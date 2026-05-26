@@ -5,9 +5,9 @@ services:
   - type: web
     name: taskdeskr-voice-core
     runtime: python
-    region: oregon
+    region: ohio  # LATENCY FIX: Ohio is closer to Vapi's US infrastructure than Oregon
     pythonVersion: "3.11.0"
-    plan: starter
+    plan: standard  # LATENCY FIX: Starter plan cold-starts after inactivity; standard stays warm
 
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
@@ -28,7 +28,7 @@ services:
       - key: OPENAI_MODEL
         value: "gpt-4.1-mini"
       - key: ANTHROPIC_MODEL
-        value: "claude-sonnet-4-5-20250929"
+        value: "claude-haiku-4-5"  # LATENCY FIX: Haiku is 3-4x faster for voice turns
       - key: ANTHROPIC_SUMMARY_MODEL
         value: "claude-opus-4-20250514"
       - key: VAPI_WEBHOOK_SECRET

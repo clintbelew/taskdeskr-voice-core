@@ -155,19 +155,20 @@ async def _handle_assistant_request(
             "name": "TaskDeskr AI Operations",
             "model": {
                 "provider": "anthropic",
-                "model": "claude-sonnet-4-5-20250929",
+                "model": "claude-haiku-4-5",  # LATENCY FIX: Haiku is 3-4x faster than Sonnet for voice turns (~300ms vs ~900ms)
                 "systemPrompt": system_prompt,
                 "tools": TOOL_DEFINITIONS,
-                "temperature": 0.7,  # raised: more natural, less scripted-sounding
+                "temperature": 0.7,
             },
             "voice": {
                 "provider": "11labs",
                 "voiceId": "g6xIsTj2HwM6VR4iXFCw",  # Jessica Anne Bogart — conversational, warm
-                "model": "eleven_flash_v2_5",          # CRITICAL fix: was missing, defaulting to old v1 model
-                "stability": 0.38,                     # lowered: more dynamic, less monotone
-                "similarityBoost": 0.75,
-                "style": 0.35,                         # added: expressiveness/emotion variance
+                "model": "eleven_flash_v2_5",          # Purpose-built real-time voice model, ~75ms
+                "stability": 0.35,                     # More dynamic = more natural variation
+                "similarityBoost": 0.80,               # Higher = more consistent character voice
+                "style": 0.40,                         # Expressiveness — warm without over-acting
                 "useSpeakerBoost": True,
+                "optimize_streaming_latency": 4,       # LATENCY FIX: Max ElevenLabs latency optimization (0-4)
             },
             "firstMessage": "Hey, this is TaskDesker. I help manage calls, scheduling, and follow-ups for the team. What can I help you get taken care of today?",
             "endCallMessage": "I've got everything noted. You're all set — talk soon.",
@@ -177,13 +178,13 @@ async def _handle_assistant_request(
             "recordingEnabled": True,
             "maxDurationSeconds": 600,
             "silenceTimeoutSeconds": 30,
-            "responseDelaySeconds": 0.4,
-            "numWordsToInterruptAssistant": 3,
+            "responseDelaySeconds": 0.1,  # LATENCY FIX: Was 0.4s — feels much more responsive now
+            "numWordsToInterruptAssistant": 2,  # LATENCY FIX: Interrupt on 2 words instead of 3 — more natural
             "transcriber": {
                 "provider": "deepgram",
                 "model": "nova-3",
                 "language": "en",
-                "endpointing": 300,
+                "endpointing": 200,  # LATENCY FIX: Detects end-of-speech 100ms faster
             },
             "backgroundDenoisingEnabled": True,
         }
