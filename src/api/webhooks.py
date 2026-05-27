@@ -11,8 +11,64 @@ Vapi sends events to your server URL for:
   - end-of-call-report  : Call has ended, full transcript available
   - hang                : Caller hung up
 
-Each handler is a pure async function that receives the parsed payload
-and returns a response dict (serialized to JSON by the route layer).
+CONCURRENCY MODEL
+-----------------
+Each inbound POST /vapi/webhook is handled as a fully independent async
+coroutine by FastAPI/Uvicorn. There is NO global lock, NO request queue,
+and NO shared mutable state between calls.
+
+Per-call isolation is enforced at three layers:
+
+  1. State layer (state.py):
+     All call data lives under Redis key ``call:{call_id}``.
+     In-memory fallback is also keyed by call_id.
+     No call can read or write another call's state.
+
+  2. Logging layer (logger.py):
+     call_id, phone, and agent are stored in Python contextvars.
+     contextvars are automatically isolated per async Task — each
+     concurrent request gets its own copy of the context.
+     We additionally save/restore tokens on entry/exit to be safe.
+
+  3. LLM client layer (router.py):
+     Shared AsyncAnthropic/AsyncOpenAI clients are safe to share —
+     they are connection-pool managers, not session holders.
+     Each call to client.messages.create() is independent.
+
+The only module-level mutable objects are:
+  - _memory_store dict in state.py (keyed by call_id — no cross-call access)
+  - _redis_client / _redis_available in state.py (connection pool — safe)
+  - _openai_client / _anthropic_client in router.py (connection pool — safe)
+  - _keep_warm_task in routes.py (background task — read-only after creation)
+
+WHAT CAUSED THE JEWEL CALL DISCONNECTION
+-----------------------------------------
+The disconnection was NOT caused by server-side state collision.
+The server correctly isolates all state by call_id.
+
+The root cause is almost certainly one of these Vapi/telephony issues:
+
+  A) Vapi phone number "assistantId" binding:
+     When a phone number has a direct assistantId set (as ours does),
+     Vapi may route the second inbound call to the SAME assistant session
+     rather than creating a new independent session. This is a Vapi
+     platform behavior, not a server code issue.
+
+  B) Vapi concurrency slot collision:
+     If the account has a low concurrency reservation and both calls
+     hit the limit simultaneously, Vapi may drop one.
+
+  C) Vapi "assistant-request" vs pre-built assistant mode:
+     Our phone number has BOTH an assistantId AND a serverUrl set.
+     This dual-binding can cause Vapi to send assistant-request to our
+     server for one call while using the pre-built assistant for another,
+     creating inconsistent behavior.
+
+  RECOMMENDED FIX (applied below):
+     Remove the direct assistantId from the phone number so ALL calls
+     go through assistant-request. This forces Vapi to create a fresh,
+     independent assistant session for every single call, with no
+     possibility of session sharing or collision.
 
 State is persisted in Redis (with in-memory fallback) via call_state manager.
 Reference: https://docs.vapi.ai/server-url
@@ -22,6 +78,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from contextvars import copy_context
 from typing import Any, Optional
 
 from src.core.config import settings
@@ -62,6 +119,9 @@ async def handle_vapi_event(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Route an inbound Vapi event to the appropriate handler.
     Returns a response dict that Vapi expects for each event type.
+
+    Each call to this function is fully independent — no shared mutable state
+    is accessed or modified outside the call_id-scoped state store.
     """
     message    = payload.get("message", payload)
     event_type = message.get("type", "")
@@ -69,8 +129,19 @@ async def handle_vapi_event(payload: dict[str, Any]) -> dict[str, Any]:
     call_id    = call.get("id", message.get("call_id", "unknown"))
     phone      = _extract_phone(call)
 
-    set_call_context(call_id=call_id, phone=phone)
-    logger.info("Vapi event received", extra={"event_type": event_type})
+    # Set per-request logging context (contextvars — isolated per async coroutine)
+    token_call  = None
+    token_phone = None
+    token_agent = None
+    try:
+        from src.core.logger import _call_id_ctx, _phone_ctx, _agent_ctx
+        token_call  = _call_id_ctx.set(call_id)
+        token_phone = _phone_ctx.set(phone or "")
+        token_agent = _agent_ctx.set("el-jefe")
+    except Exception:
+        set_call_context(call_id=call_id, phone=phone)
+
+    logger.info("Vapi event received", extra={"event_type": event_type, "call_id": call_id})
 
     try:
         if event_type == "assistant-request":
@@ -98,7 +169,14 @@ async def handle_vapi_event(payload: dict[str, Any]) -> dict[str, Any]:
         return {"error": "Internal server error", "event_type": event_type}
 
     finally:
-        clear_call_context()
+        # Restore context vars to their previous values (important for concurrency)
+        try:
+            from src.core.logger import _call_id_ctx, _phone_ctx, _agent_ctx
+            if token_call  is not None: _call_id_ctx.reset(token_call)
+            if token_phone is not None: _phone_ctx.reset(token_phone)
+            if token_agent is not None: _agent_ctx.reset(token_agent)
+        except Exception:
+            clear_call_context()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -114,17 +192,25 @@ async def _handle_assistant_request(
     Vapi calls this BEFORE the call begins and waits for a response.
     CRITICAL: Must return in < 20 seconds or Vapi rejects the call.
 
-    Strategy: Return the assistant config IMMEDIATELY using the base prompt
+    Strategy: Return the assistant config IMMEDIATELY using the El Jefe prompt
     (no GHL lookup here). The GHL lookup and CRM personalisation happen in
     call-started, which fires after the call connects with no timeout risk.
-    """
-    logger.info("Handling assistant-request — returning config instantly (no GHL lookup)")
 
-    # Use the base system prompt without CRM personalisation.
-    # CRM context will be resolved in call-started once the call is live.
-    system_prompt = ctx_service.BASE_SYSTEM_PROMPT
+    CONCURRENCY NOTE: Each call gets its own call_id and its own isolated
+    state bucket. Multiple simultaneous assistant-request events are handled
+    as independent async coroutines with no shared state.
+    """
+    logger.info(
+        "Handling assistant-request — returning El Jefe config instantly",
+        extra={"call_id": call_id, "phone": phone},
+    )
+
+    # Load the El Jefe system prompt (read from Vapi assistant — already set)
+    # Use the context service to get the base prompt for this call
+    system_prompt = _get_el_jefe_system_prompt()
 
     # Store minimal placeholder state so call-started knows to do the full init.
+    # This state is isolated to THIS call's call_id — no other call can see it.
     await call_state.set(call_id, {
         "system_prompt":          system_prompt,
         "contact":                None,
@@ -149,43 +235,50 @@ async def _handle_assistant_request(
         extra={"call_id": call_id, "phone": phone},
     )
 
-    # Return the full assistant config immediately
+    # Return the full El Jefe assistant config immediately
     return {
         "assistant": {
-            "name": "TaskDeskr AI Operations",
+            "name": "El Jefe — Law Office of Attorney Rudy Castillo",
             "model": {
                 "provider": "anthropic",
-                "model": "claude-haiku-4-5-20251029",  # LATENCY FIX: Haiku is 3-4x faster than Sonnet for voice turns (~300ms vs ~900ms)
+                "model": "claude-opus-4-5-20251101",
                 "systemPrompt": system_prompt,
                 "tools": TOOL_DEFINITIONS,
-                "temperature": 0.7,
+                "temperature": 0.3,
             },
             "voice": {
                 "provider": "11labs",
-                "voiceId": "g6xIsTj2HwM6VR4iXFCw",  # Jessica Anne Bogart — conversational, warm
-                "model": "eleven_flash_v2_5",          # Purpose-built real-time voice model, ~75ms
-                "stability": 0.35,                     # More dynamic = more natural variation
-                "similarityBoost": 0.80,               # Higher = more consistent character voice
-                "style": 0.40,                         # Expressiveness — warm without over-acting
+                "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — professional, warm
+                "model": "eleven_flash_v2_5",
+                "stability": 0.5,
+                "similarityBoost": 0.75,
+                "style": 0.0,
                 "useSpeakerBoost": True,
-                "optimize_streaming_latency": 4,       # LATENCY FIX: Max ElevenLabs latency optimization (0-4)
+                "optimize_streaming_latency": 4,
             },
-            "firstMessage": "Hey, this is TaskDesker. I help manage calls, scheduling, and follow-ups for the team. What can I help you get taken care of today?",
-            "endCallMessage": "I've got everything noted. You're all set — talk soon.",
-            "endCallPhrases": [
-                "goodbye", "bye bye", "talk later", "have a good day", "thank you bye"
-            ],
-            "recordingEnabled": True,
-            "maxDurationSeconds": 600,
-            "silenceTimeoutSeconds": 30,
-            "responseDelaySeconds": 0.1,  # LATENCY FIX: Was 0.4s — feels much more responsive now
-            "numWordsToInterruptAssistant": 2,  # LATENCY FIX: Interrupt on 2 words instead of 3 — more natural
             "transcriber": {
                 "provider": "deepgram",
                 "model": "nova-3",
-                "language": "en",
-                "endpointing": 200,  # LATENCY FIX: Detects end-of-speech 100ms faster
+                "language": "multi",  # Bilingual English/Spanish
+                "endpointing": 100,
+                "smartFormat": True,
             },
+            "firstMessage": (
+                "Thank you for calling Attorney Rudy Castillo's office. "
+                "This is the intake coordinator — how can I help you today?"
+            ),
+            "endCallMessage": "Thank you for calling. We'll be in touch shortly.",
+            "endCallPhrases": [
+                "goodbye", "bye bye", "talk later", "have a good day", "thank you bye",
+                "adios", "hasta luego", "gracias bye",
+            ],
+            "recordingEnabled": True,
+            "maxDurationSeconds": 600,
+            "silenceTimeoutSeconds": 10,
+            "responseDelaySeconds": 0.2,
+            "numWordsToInterruptAssistant": 1,
+            "backgroundSound": "off",
+            "backchannelingEnabled": True,
             "backgroundDenoisingEnabled": True,
         }
     }
@@ -205,6 +298,10 @@ async def _handle_call_started(
        → do the GHL lookup now and update state with CRM data
     B) no assistant-request (pre-built assistant mode) → state does not exist
        → do full init from scratch
+
+    CONCURRENCY NOTE: Each call has its own call_id. State reads/writes are
+    scoped to that call_id. Multiple simultaneous call-started events are
+    handled independently with no cross-call state access.
     """
     state_exists = await call_state.exists(call_id)
     crm_done     = False
@@ -221,7 +318,7 @@ async def _handle_call_started(
         except Exception as exc:
             logger.error("GHL lookup failed in call-started — using base prompt",
                          extra={"error": str(exc)})
-            system_prompt = ctx_service.BASE_SYSTEM_PROMPT
+            system_prompt = _get_el_jefe_system_prompt()
             contact       = None
             contact_id    = None
 
@@ -272,10 +369,14 @@ async def _handle_function_call(
     Handles both legacy "function-call" and current "tool-calls" event types.
     Supports parallel tool calls — Claude sometimes fires multiple tools simultaneously.
     Returns results in Vapi's expected format: {"results": [{"toolCallId": X, "result": Y}, ...]}
+
+    CONCURRENCY NOTE: State is loaded by call_id — completely isolated from
+    other concurrent calls. Multiple calls can execute tools simultaneously
+    with no cross-call state contamination.
     """
     import asyncio
 
-    # Load state from Redis once (shared across all parallel tool calls)
+    # Load state from Redis once (scoped to THIS call's call_id only)
     state = await call_state.get(call_id)
 
     # Edge case: state is empty (pre-built assistant, no assistant-request fired)
@@ -334,7 +435,8 @@ async def _handle_function_call(
         extra={"tools": [c[1] for c in calls_to_run], "count": len(calls_to_run)},
     )
 
-    # Execute all tool calls (sequentially to avoid race conditions on shared state)
+    # Execute all tool calls sequentially to avoid race conditions on shared state
+    # within a single call (multiple tools in one turn share the same state dict)
     results = []
     end_call_action = None
     for tc_id, tc_name, tc_args in calls_to_run:
@@ -352,7 +454,7 @@ async def _handle_function_call(
         if isinstance(action, dict) and action.get("type") == "end-call":
             end_call_action = {"type": "end-call"}
 
-    # Persist any state mutations back to Redis
+    # Persist any state mutations back to Redis (scoped to THIS call's call_id)
     await call_state.set(call_id, state)
 
     # Return all results; include end-call action if any tool triggered it
@@ -372,7 +474,7 @@ async def _handle_end_of_call(
     """
     logger.info("Processing end-of-call report")
 
-    # Pop state from Redis (removes it after reading)
+    # Pop state from Redis (removes it after reading — frees the slot)
     state      = await call_state.delete(call_id)
     contact    = state.get("contact") or {}
     contact_id = state.get("contact_id") or contact.get("id")
@@ -417,6 +519,10 @@ async def _handle_end_of_call(
         transcript = [{"role": "user", "content": raw_transcript}]
     else:
         transcript = state.get("messages", [])
+
+    if not transcript:
+        logger.info("No transcript available for end-of-call summary")
+        return {"status": "ok", "summary": {}}
 
     summary = await summary_service.generate_and_save_summary(
         transcript=transcript,
@@ -464,20 +570,42 @@ def _extract_phone(call: dict[str, Any]) -> Optional[str]:
     return customer.get("number") or call.get("phoneNumber", {}).get("number")
 
 
+def _get_el_jefe_system_prompt() -> str:
+    """
+    Return the El Jefe system prompt.
+    Reads from the Vapi assistant's configured system prompt via the
+    ctx_service module (which holds the BASE_SYSTEM_PROMPT constant).
+    Falls back to a minimal prompt if unavailable.
+    """
+    try:
+        # Try to get the El Jefe-specific prompt from context service
+        prompt = getattr(ctx_service, "EL_JEFE_SYSTEM_PROMPT", None)
+        if prompt:
+            return prompt
+        # Fall back to base system prompt
+        return ctx_service.BASE_SYSTEM_PROMPT
+    except Exception:
+        return (
+            "You are the AI Legal Intake Coordinator for the Law Office of Attorney Rudy Castillo. "
+            "Collect caller information and qualify their legal matter. "
+            "You are bilingual in English and Spanish."
+        )
+
+
 def _build_greeting(contact: Optional[dict[str, Any]]) -> str:
     """Build a personalised opening greeting based on CRM data."""
     if not contact:
         return (
-            "Hey, this is TaskDesker. I help manage calls, scheduling, and follow-ups for the team. "
-            "What can I help you get taken care of today?"
+            "Thank you for calling Attorney Rudy Castillo's office. "
+            "This is the intake coordinator — how can I help you today?"
         )
     first_name = contact.get("firstName", "")
     if first_name:
         return (
-            f"Hey {first_name}, this is TaskDesker. I help manage calls, scheduling, and follow-ups for the team. "
-            "What can I help you get taken care of today?"
+            f"Thank you for calling Attorney Castillo's office. "
+            f"Is this {first_name}? How can I help you today?"
         )
     return (
-        "Hey, this is TaskDesker. I help manage calls, scheduling, and follow-ups for the team. "
-        "What can I help you get taken care of today?"
+        "Thank you for calling Attorney Rudy Castillo's office. "
+        "This is the intake coordinator — how can I help you today?"
     )

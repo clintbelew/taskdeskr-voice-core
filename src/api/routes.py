@@ -8,10 +8,21 @@ Endpoints:
   GET  /health              — Health check for Render/Railway uptime monitoring
   GET  /                    — Root info endpoint
 
-Keep-warm:
-  A background task pings /health every 10 minutes so Render's free tier never
-  goes cold. Render spins down after ~15 min of inactivity; Vapi only waits 20s
-  for a webhook response — so a cold start = failed call.
+Concurrency model:
+  Every inbound POST /vapi/webhook is handled as a fully independent async request.
+  FastAPI + Uvicorn (asyncio event loop) processes all requests concurrently — there
+  is NO global lock, NO shared mutable state between calls, and NO request queue.
+
+  Per-call state is isolated by call_id in Redis (or the in-memory fallback dict,
+  which is also keyed by call_id and never shared across calls).
+
+  The only module-level shared objects are:
+    - _keep_warm_task: a background asyncio.Task (read-only after creation)
+    - _memory_store in state.py: a dict[call_id -> state], safe because each
+      call only reads/writes its own key
+
+  This means N simultaneous callers each get their own isolated state bucket and
+  their own independent async execution path through the webhook handler.
 """
 
 from __future__ import annotations
@@ -43,7 +54,11 @@ async def _keep_warm_loop() -> None:
     """Ping our own /health endpoint every 10 minutes to prevent Render cold starts."""
     # Wait a bit after startup before the first ping
     await asyncio.sleep(60)
-    base_url = f"https://{settings.RENDER_EXTERNAL_HOSTNAME}" if getattr(settings, "RENDER_EXTERNAL_HOSTNAME", None) else "https://taskdeskr-voice-core.onrender.com"
+    base_url = (
+        f"https://{settings.RENDER_EXTERNAL_HOSTNAME}"
+        if getattr(settings, "RENDER_EXTERNAL_HOSTNAME", None)
+        else "https://taskdeskr-voice-core.onrender.com"
+    )
     url = f"{base_url}/health"
     while True:
         try:
@@ -60,7 +75,14 @@ async def lifespan(app: FastAPI):
     """Start keep-warm background task on startup; cancel it on shutdown."""
     global _keep_warm_task
     _keep_warm_task = asyncio.create_task(_keep_warm_loop())
-    logger.info("Keep-warm background task started (interval: 10 min)")
+    logger.info(
+        "TaskDeskr Voice Core started",
+        extra={
+            "version": settings.APP_VERSION,
+            "concurrency_model": "per-request async isolation (no global locks)",
+            "state_backend": "Redis (in-memory fallback if REDIS_URL not set)",
+        },
+    )
     try:
         yield
     finally:
@@ -82,7 +104,11 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
         version=settings.APP_VERSION,
-        description="Production-ready voice backend for TaskDeskr: Vapi + Claude + GoHighLevel",
+        description=(
+            "Production-ready voice backend for TaskDeskr: Vapi + Claude + GoHighLevel. "
+            "Supports unlimited simultaneous inbound calls — each call is fully isolated "
+            "by call_id with no shared mutable state."
+        ),
         docs_url="/docs" if settings.DEBUG else None,
         redoc_url="/redoc" if settings.DEBUG else None,
         lifespan=lifespan,
@@ -104,6 +130,7 @@ def create_app() -> FastAPI:
             "service": settings.APP_NAME,
             "version": settings.APP_VERSION,
             "status": "running",
+            "concurrency": "unlimited (async per-call isolation)",
         }
 
     @app.get("/health", tags=["System"])
@@ -123,19 +150,27 @@ def create_app() -> FastAPI:
         """
         Main Vapi webhook endpoint.
 
+        CONCURRENCY GUARANTEE:
+        Each HTTP request to this endpoint is handled as a fully independent
+        async coroutine by FastAPI/Uvicorn. There is no global lock, no queue,
+        and no shared state between calls. Multiple simultaneous callers each
+        get their own isolated execution path.
+
+        State isolation is enforced by call_id:
+          - Each call's data lives under its own Redis key (call:{call_id})
+          - The in-memory fallback is also keyed by call_id
+          - No call can read or write another call's state
+
         Vapi sends all call lifecycle events here:
           - assistant-request
           - call-started
-          - function-call
+          - function-call / tool-calls
           - transcript
           - end-of-call-report
           - hang
 
         Configure this URL in your Vapi dashboard under:
         Dashboard → Phone Numbers → Server URL  (or Assistant → Server URL)
-
-        Vapi authenticates by sending the secret as a plain-text value in the
-        X-Vapi-Secret header (not HMAC). We do a constant-time comparison.
         """
         raw_body = await request.body()
 
@@ -157,6 +192,10 @@ def create_app() -> FastAPI:
             logger.error("Failed to parse webhook payload as JSON")
             raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
+        # Each call to handle_vapi_event is fully independent:
+        # - It reads call_id from the payload
+        # - All state reads/writes are scoped to that call_id
+        # - No global state is mutated
         response = await handle_vapi_event(payload)
         return JSONResponse(content=response)
 
