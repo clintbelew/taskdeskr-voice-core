@@ -146,8 +146,8 @@ async def _handle_save_caller_info(
     if email:
         call_state["caller_email"] = email
 
-    # Tag as voice-bot-lead (GHL ignores duplicate tags)
-    await ghl.add_tags(contact_id, ["voice-bot-lead"])
+    # Tag as el-jefe-lead baseline (GHL ignores duplicate tags)
+    await ghl.add_tags(contact_id, ["el-jefe-lead"])
 
     logger.info("Caller info saved", extra={"contact_id": contact_id, "first_name": first_name})
     return {"result": f"Got it — I've saved {first_name}'s information."}
@@ -257,6 +257,21 @@ async def _handle_save_qualification_data(
     call_state.setdefault("qualification", {}).update(
         {k: v for k, v in args.items() if v is not None}
     )
+
+    # Apply tags passed by the LLM based on intake findings
+    tags_from_llm = args.get("tags", [])
+    tags_to_apply = list(set(["el-jefe-lead"] + (tags_from_llm if isinstance(tags_from_llm, list) else [])))
+    try:
+        await ghl.add_tags(contact_id, tags_to_apply)
+        logger.info(
+            "save_qualification_data: tags applied",
+            extra={"contact_id": contact_id, "tags": tags_to_apply},
+        )
+    except Exception as exc:
+        logger.warning(
+            "save_qualification_data: tag write failed, continuing",
+            extra={"contact_id": contact_id, "error": str(exc)},
+        )
 
     logger.info(
         "save_qualification_data: saved successfully",

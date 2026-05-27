@@ -94,6 +94,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "How the caller heard about the law office (e.g. 'friend referral', 'Google', 'hospital staff')",
                     },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "List of tags to apply to this contact based on the intake. "
+                            "Always include 'el-jefe-lead'. "
+                            "Add 'personal-injury' for accident/injury/PI cases. "
+                            "Add 'immigration' for immigration matters. "
+                            "Add 'criminal' for criminal defense matters. "
+                            "Add 'spanish-speaker' if the caller spoke Spanish at any point. "
+                            "Add 'tier1-escalation', 'severe-injury', AND 'high-value-lead' "
+                            "for hospitalized callers, surgery cases, or severe/critical injuries. "
+                            "Add 'consultation-requested' if the caller asked for a consultation."
+                        ),
+                    },
                 },
                 "required": [],
             },
