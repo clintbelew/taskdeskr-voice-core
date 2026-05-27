@@ -241,27 +241,26 @@ async def _handle_assistant_request(
             "name": "El Jefe — Law Office of Attorney Rudy Castillo",
             "model": {
                 "provider": "anthropic",
-                "model": "claude-opus-4-5-20251101",
+                "model": "claude-haiku-4-5-20251029",  # LATENCY FIX: Haiku is 3-4x faster for voice turns (~300ms vs ~900ms)
                 "systemPrompt": system_prompt,
                 "tools": TOOL_DEFINITIONS,
-                "temperature": 0.3,
+                "temperature": 0.7,
             },
             "voice": {
                 "provider": "11labs",
-                "voiceId": "21m00Tcm4TlvDq8ikWAM",  # Rachel — professional, warm
+                "voiceId": "g6xIsTj2HwM6VR4iXFCw",  # Jessica Anne Bogart — conversational, warm (original working voice)
                 "model": "eleven_flash_v2_5",
-                "stability": 0.5,
-                "similarityBoost": 0.75,
-                "style": 0.0,
+                "stability": 0.35,
+                "similarityBoost": 0.80,
+                "style": 0.40,
                 "useSpeakerBoost": True,
                 "optimize_streaming_latency": 4,
             },
             "transcriber": {
                 "provider": "deepgram",
                 "model": "nova-3",
-                "language": "multi",  # Bilingual English/Spanish
-                "endpointing": 100,
-                "smartFormat": True,
+                "language": "en",  # Deepgram nova-3 — bilingual handled by LLM, not transcriber
+                "endpointing": 200,  # LATENCY FIX: Detects end-of-speech faster
             },
             "firstMessage": (
                 "Thank you for calling Attorney Rudy Castillo's office. "
@@ -274,11 +273,9 @@ async def _handle_assistant_request(
             ],
             "recordingEnabled": True,
             "maxDurationSeconds": 600,
-            "silenceTimeoutSeconds": 10,
-            "responseDelaySeconds": 0.2,
-            "numWordsToInterruptAssistant": 1,
-            "backgroundSound": "off",
-            "backchannelingEnabled": True,
+            "silenceTimeoutSeconds": 30,
+            "responseDelaySeconds": 0.1,  # LATENCY FIX: Was 0.4s
+            "numWordsToInterruptAssistant": 2,  # LATENCY FIX: More natural interruption
             "backgroundDenoisingEnabled": True,
         }
     }
