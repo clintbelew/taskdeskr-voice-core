@@ -46,12 +46,12 @@ logger = get_logger(__name__)
 # Keep-warm background task
 # ─────────────────────────────────────────────────────────────────────────────
 
-_KEEP_WARM_INTERVAL = 10 * 60  # 10 minutes in seconds
+_KEEP_WARM_INTERVAL = 5 * 60  # 5 minutes — prevents Render free-tier cold starts (spins down after 15min)
 _keep_warm_task: Optional[asyncio.Task] = None
 
 
 async def _keep_warm_loop() -> None:
-    """Ping our own /health endpoint every 10 minutes to prevent Render cold starts."""
+    """Ping our own /health endpoint every 5 minutes to prevent Render free-tier cold starts."""
     # Wait a bit after startup before the first ping
     await asyncio.sleep(60)
     base_url = (
