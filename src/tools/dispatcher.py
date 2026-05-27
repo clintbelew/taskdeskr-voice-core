@@ -86,14 +86,16 @@ async def dispatch(
         call_state["contact_id"] = contact_id
 
     handlers = {
-        "save_caller_info":        _handle_save_caller_info,
-        "save_lead_info":          _handle_save_lead_info,
-        "create_lead_opportunity": _handle_create_lead_opportunity,
-        "check_availability":      _handle_check_availability,
-        "create_appointment":      _handle_create_appointment,
-        "send_website_link":       _handle_send_website_link,
-        "send_demo_booking_link":  _handle_send_demo_booking_link,
-        "end_call":                _handle_end_call,
+        "save_caller_info":         _handle_save_caller_info,
+        "save_lead_info":           _handle_save_lead_info,
+        "save_qualification_data":  _handle_save_qualification_data,
+        "create_lead_opportunity":  _handle_create_lead_opportunity,
+        "check_availability":       _handle_check_availability,
+        "create_appointment":       _handle_create_appointment,
+        "send_website_link":        _handle_send_website_link,
+        "send_demo_booking_link":   _handle_send_demo_booking_link,
+        "send_booking_link":        _handle_send_demo_booking_link,
+        "end_call":                 _handle_end_call,
     }
 
     handler = handlers.get(tool_name)
@@ -194,6 +196,73 @@ async def _handle_save_lead_info(
 
     logger.info("Lead info saved", extra={"contact_id": contact_id, "fields": list(field_updates.keys())})
     return {"result": "Lead information saved."}
+
+
+async def _handle_save_qualification_data(
+    args: dict[str, Any],
+    call_state: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Save El Jefe intake qualification data to GHL contact.
+    Handles: chief_complaint, has_insurance, insurance_provider, referral_source.
+    Succeeds gracefully even if some fields are missing or empty.
+    """
+    contact_id = call_state.get("contact_id")
+
+    # Log the incoming payload for debugging
+    logger.info(
+        "save_qualification_data received",
+        extra={
+            "contact_id": contact_id or "none",
+            "chief_complaint":    args.get("chief_complaint", ""),
+            "has_insurance":      args.get("has_insurance", ""),
+            "insurance_provider": args.get("insurance_provider", ""),
+            "referral_source":    args.get("referral_source", ""),
+        },
+    )
+
+    if not contact_id:
+        # No contact yet — store in call state for end-of-call summary
+        call_state.setdefault("qualification", {}).update(
+            {k: v for k, v in args.items() if v is not None}
+        )
+        logger.info("save_qualification_data: no contact_id yet, stored in call state")
+        return {"result": "Intake notes saved for the call summary."}
+
+    # Map Vapi args to GHL qualification fields
+    insurance_status = None
+    if "has_insurance" in args:
+        insurance_status = "yes" if args["has_insurance"] else "no"
+
+    try:
+        await ghl.update_qualification_fields(
+            contact_id=contact_id,
+            insurance_status=insurance_status,
+            insurance_provider=args.get("insurance_provider") or "",
+            chief_complaint=args.get("chief_complaint") or "",
+            referral_source=args.get("referral_source") or "",
+        )
+    except Exception as exc:
+        # Log but do NOT fail — return a valid result so the LLM continues
+        logger.warning(
+            "save_qualification_data: GHL update failed, continuing",
+            extra={"contact_id": contact_id, "error": str(exc)},
+        )
+        call_state.setdefault("qualification", {}).update(
+            {k: v for k, v in args.items() if v is not None}
+        )
+        return {"result": "Intake information noted for the attorney team."}
+
+    # Mirror in call state for end-of-call summary
+    call_state.setdefault("qualification", {}).update(
+        {k: v for k, v in args.items() if v is not None}
+    )
+
+    logger.info(
+        "save_qualification_data: saved successfully",
+        extra={"contact_id": contact_id, "fields_saved": list(args.keys())},
+    )
+    return {"result": "Qualification data saved. The attorney team has been notified."}
 
 
 async def _handle_create_lead_opportunity(

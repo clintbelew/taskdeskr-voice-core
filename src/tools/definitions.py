@@ -60,43 +60,39 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
 
-    # ── 2. Save lead info (interest, questions, use case) ─────────────────────
+    # ── 2. Save qualification data (El Jefe intake fields) ───────────────────
     {
         "type": "function",
         "server": {"url": VAPI_WEBHOOK_URL},
         "function": {
-            "name": "save_lead_info",
+            "name": "save_qualification_data",
             "description": (
-                "Save information about the caller's interest in TaskDeskr. "
-                "Call this after you understand what they are looking for and "
-                "what questions they asked. Only include fields you have actually collected."
+                "Save intake qualification information to the CRM. "
+                "Call this after collecting the caller's chief complaint, insurance status, "
+                "and referral source. Only include fields you have actually collected. "
+                "All fields are optional — call this even if only one field is known."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "interest_level": {
-                        "type": "string",
-                        "enum": ["high", "medium", "low", "just_browsing"],
-                        "description": "How interested the caller seemed in TaskDeskr",
-                    },
-                    "business_type": {
+                    "chief_complaint": {
                         "type": "string",
                         "description": (
-                            "Type of business the caller runs or works at "
-                            "(e.g. 'medical office', 'law firm', 'real estate agency')"
+                            "Brief description of the caller's legal matter or injury "
+                            "(e.g. '18-wheeler accident on I-35, hospitalized with back injuries')"
                         ),
                     },
-                    "main_question": {
+                    "has_insurance": {
+                        "type": "boolean",
+                        "description": "Whether the caller has insurance coverage related to the incident",
+                    },
+                    "insurance_provider": {
                         "type": "string",
-                        "description": "The main question or concern the caller had about TaskDeskr",
+                        "description": "Name of the caller's insurance provider, if known",
                     },
                     "referral_source": {
                         "type": "string",
-                        "description": "How the caller heard about TaskDeskr (e.g. 'Google', 'friend referral', 'social media')",
-                    },
-                    "demo_requested": {
-                        "type": "boolean",
-                        "description": "Whether the caller asked for or agreed to a live demo",
+                        "description": "How the caller heard about the law office (e.g. 'friend referral', 'Google', 'hospital staff')",
                     },
                 },
                 "required": [],
