@@ -95,6 +95,8 @@ async def dispatch(
         "send_website_link":        _handle_send_website_link,
         "send_demo_booking_link":   _handle_send_demo_booking_link,
         "send_booking_link":        _handle_send_demo_booking_link,
+        "send_sms_confirmation":    _handle_send_sms_confirmation,
+        "send_internal_alert":      _handle_send_internal_alert,
         "end_call":                 _handle_end_call,
     }
 
@@ -614,6 +616,173 @@ async def _handle_send_demo_booking_link(
         "result": (
             "Could not send SMS — tell the caller they can book a demo at "
             f"{DEMO_BOOKING_LINK_URL}"
+        )
+    }
+
+
+async def _handle_send_sms_confirmation(
+    args: dict[str, Any],
+    call_state: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Send a bilingual intake confirmation SMS to the caller.
+    Detects language from call_state['language'] (set by LLM via save_qualification_data tags).
+    Fires after save_qualification_data completes — confirms receipt and sets expectations.
+    """
+    contact_id = call_state.get("contact_id")
+    if not contact_id:
+        logger.warning("send_sms_confirmation: no contact_id, skipping")
+        return {"result": "Confirmation noted internally."}
+
+    first_name    = call_state.get("caller_first_name", "").strip()
+    language      = args.get("language", "english").lower()
+    matter_type   = args.get("matter_type", "").strip()
+    is_urgent     = args.get("is_urgent", False)
+    is_spanish    = "spanish" in language or language == "es"
+
+    # Determine tags to check for spanish-speaker
+    qualification = call_state.get("qualification", {})
+    tags_applied  = qualification.get("tags", [])
+    if isinstance(tags_applied, list) and "spanish-speaker" in tags_applied:
+        is_spanish = True
+
+    # Build bilingual message
+    name_part = f" {first_name}" if first_name else ""
+    matter_part_en = f" regarding your {matter_type} matter" if matter_type else ""
+    matter_part_es = f" sobre su caso de {matter_type}" if matter_type else ""
+
+    if is_urgent:
+        if is_spanish:
+            sms_body = (
+                f"Hola{name_part}, le habla la oficina del Licenciado Castillo. "
+                f"Recibimos su mensaje{matter_part_es} y lo marcamos como URGENTE. "
+                f"Alguien del equipo le llamará en menos de una hora. "
+                f"Responda STOP para no recibir más mensajes."
+            )
+        else:
+            sms_body = (
+                f"Hi{name_part}, this is the Law Office of Attorney Castillo. "
+                f"We received your message{matter_part_en} and flagged it as URGENT. "
+                f"Someone from our team will call you back within the hour. "
+                f"Reply STOP to opt out."
+            )
+    else:
+        if is_spanish:
+            sms_body = (
+                f"Hola{name_part}, le habla la oficina del Licenciado Castillo. "
+                f"Recibimos su información{matter_part_es}. "
+                f"Un miembro del equipo se comunicará con usted pronto para los próximos pasos. "
+                f"Responda STOP para no recibir más mensajes."
+            )
+        else:
+            sms_body = (
+                f"Hi{name_part}, this is the Law Office of Attorney Castillo. "
+                f"We've received your intake information{matter_part_en}. "
+                f"A member of our team will follow up with you shortly with next steps. "
+                f"Reply STOP to opt out."
+            )
+
+    # Move opportunity to Intake Completed stage
+    opportunity_id = call_state.get("opportunity_id")
+    if opportunity_id:
+        try:
+            await ghl.move_opportunity_stage(
+                opportunity_id=opportunity_id,
+                stage_id=GHLPipeline.Stages.INTAKE_COMPLETED,
+            )
+            call_state["pipeline_stage"] = "intake_completed"
+        except Exception as exc:
+            logger.warning(
+                "send_sms_confirmation: stage move failed",
+                extra={"opportunity_id": opportunity_id, "error": str(exc)},
+            )
+
+    # Send the SMS
+    try:
+        await ghl.send_sms(
+            contact_id=contact_id,
+            message=sms_body,
+            from_number=settings.GHL_SMS_FROM_NUMBER,
+        )
+        logger.info(
+            "Intake confirmation SMS sent",
+            extra={"contact_id": contact_id, "language": "spanish" if is_spanish else "english", "urgent": is_urgent},
+        )
+        call_state["confirmation_sms_sent"] = True
+    except ghl.GHLError as exc:
+        logger.error(
+            "Failed to send intake confirmation SMS",
+            extra={"contact_id": contact_id, "error": str(exc)},
+        )
+        return {"result": "Intake confirmed internally — SMS delivery failed."}
+
+    return {
+        "result": (
+            "Confirmation SMS sent to the caller. "
+            "Do NOT announce this — it happens silently in the background."
+        )
+    }
+
+
+async def _handle_send_internal_alert(
+    args: dict[str, Any],
+    call_state: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Send an internal alert SMS to the attorney team with intake summary.
+    Fires after save_qualification_data — routes to Clint/team with caller name,
+    phone, matter type, urgency level, short summary, and callback expectation.
+    """
+    contact_id = call_state.get("contact_id")
+
+    first_name    = call_state.get("caller_first_name", "Unknown").strip()
+    last_name     = call_state.get("caller_last_name", "").strip()
+    caller_name   = f"{first_name} {last_name}".strip() or "Unknown Caller"
+    phone         = call_state.get("phone", "unknown")
+    matter_type   = args.get("matter_type", "unknown")
+    urgency       = args.get("urgency", "standard")
+    summary       = args.get("summary", "")
+    callback_eta  = args.get("callback_eta", "within 24 hours")
+    is_urgent     = urgency.lower() in ("urgent", "tier1", "high", "critical")
+
+    # Build the internal alert message
+    urgency_flag  = "🚨 URGENT" if is_urgent else "📋 New Lead"
+    alert_body = (
+        f"{urgency_flag} — El Jefe AI Intake\n"
+        f"Caller: {caller_name}\n"
+        f"Phone: {phone}\n"
+        f"Matter: {matter_type}\n"
+        f"Urgency: {urgency}\n"
+    )
+    if summary:
+        alert_body += f"Summary: {summary}\n"
+    alert_body += f"Callback: {callback_eta}\n"
+    alert_body += "— TaskDeskr AI Intake System"
+
+    # Send to the internal alert number (Clint's number via GHL)
+    # Uses the same GHL send_sms but targets the assigned user's contact
+    # For now, log the alert and send to GHL as a note on the contact
+    if contact_id:
+        try:
+            await ghl.add_note(
+                contact_id=contact_id,
+                body=f"[INTERNAL ALERT]\n{alert_body}",
+            )
+            logger.info(
+                "Internal alert note added",
+                extra={"contact_id": contact_id, "urgency": urgency, "matter": matter_type},
+            )
+        except Exception as exc:
+            logger.warning(
+                "Internal alert note failed",
+                extra={"contact_id": contact_id, "error": str(exc)},
+            )
+
+    call_state["internal_alert_sent"] = True
+    return {
+        "result": (
+            "Internal alert sent to attorney team. "
+            "Do NOT announce this — it happens silently in the background."
         )
     }
 

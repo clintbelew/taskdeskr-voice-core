@@ -255,7 +255,80 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
 
-    # ── 8. End call ───────────────────────────────────────────────────────────
+
+    # ── 8. Send SMS confirmation to caller ────────────────────────────────────
+    {
+        "type": "function",
+        "server": {"url": VAPI_WEBHOOK_URL},
+        "function": {
+            "name": "send_sms_confirmation",
+            "description": (
+                "Send a bilingual intake confirmation SMS to the caller after their information "
+                "has been collected. Call this silently after save_qualification_data completes. "
+                "Detects language automatically from the call context. "
+                "For urgent/Tier 1 cases, set is_urgent=true for the escalation message."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "language": {
+                        "type": "string",
+                        "enum": ["english", "spanish"],
+                        "description": "Language of the caller — english or spanish",
+                    },
+                    "matter_type": {
+                        "type": "string",
+                        "description": "The legal matter type (e.g. personal injury, immigration, criminal defense)",
+                    },
+                    "is_urgent": {
+                        "type": "boolean",
+                        "description": "True if this is a Tier 1 urgent escalation case",
+                    },
+                },
+                "required": ["language"],
+            },
+        },
+    },
+
+    # ── 9. Send internal alert to attorney team ───────────────────────────────
+    {
+        "type": "function",
+        "server": {"url": VAPI_WEBHOOK_URL},
+        "function": {
+            "name": "send_internal_alert",
+            "description": (
+                "Send an internal alert to the attorney team (Clint/Rudy) with the intake summary. "
+                "Call this silently after save_qualification_data completes — never announce it. "
+                "Include caller name, phone, matter type, urgency level, short summary, and callback expectation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "matter_type": {
+                        "type": "string",
+                        "description": "The legal matter type (e.g. personal injury, immigration, criminal defense)",
+                    },
+                    "urgency": {
+                        "type": "string",
+                        "enum": ["standard", "urgent", "tier1"],
+                        "description": "Urgency level of the case",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "1-2 sentence summary of the caller's situation",
+                    },
+                    "callback_eta": {
+                        "type": "string",
+                        "description": "Expected callback timeframe (e.g. 'within the hour', 'within 24 hours')",
+                    },
+                },
+                "required": ["matter_type", "urgency"],
+            },
+        },
+    },
+
+    # ── 10. End call ───────────────────────────────────────────────────────────
+
     {
         "type": "function",
         "server": {"url": VAPI_WEBHOOK_URL},
