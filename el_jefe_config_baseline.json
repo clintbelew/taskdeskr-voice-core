@@ -1,0 +1,75 @@
+{
+  "_meta": {
+    "description": "El Jefe \u2014 Law Office of Attorney Rudy Castillo \u2014 Canonical Runtime Config",
+    "source_of_truth": "This file. All changes MUST be made here first.",
+    "vapi_assistant_id": "32535107-c49c-4aa7-b9e1-c7ec3184d313",
+    "vapi_phone_id": "32ff4b53-6ffc-4f4f-8b85-cb14201d7eb5",
+    "phone_number": "+18302408224",
+    "render_service": "https://taskdeskr-voice-core.onrender.com",
+    "webhook_url": "https://taskdeskr-voice-core.onrender.com/vapi/webhook",
+    "config_owner": "webhooks.py assistant-request handler",
+    "last_verified": "2026-05-27",
+    "notes": [
+      "assistantId is set on the phone number so Vapi loads config from the Vapi assistant directly.",
+      "The Vapi assistant is kept in sync with this file via update_vapi_assistant.py.",
+      "The webhook server handles all tool calls (GHL, SMS, tasks) \u2014 NOT the assistant config.",
+      "NEVER change model/voice/transcriber/firstMessage in the Vapi dashboard directly.",
+      "ALWAYS update this file first, then run update_vapi_assistant.py to sync."
+    ]
+  },
+  "assistant": {
+    "name": "El Jefe Law Office Castillo",
+    "firstMessage": "Thank you for calling Attorney Rudy Castillo's office. This is the intake coordinator \u2014 how can I help you today?",
+    "silenceTimeoutSeconds": 30,
+    "responseDelaySeconds": 0.1,
+    "numWordsToInterruptAssistant": 2
+  },
+  "model": {
+    "provider": "anthropic",
+    "model": "claude-haiku-4-5-20251001",
+    "temperature": 0.7,
+    "systemPromptFile": "el_jefe_system_prompt.txt",
+    "systemPromptChars": 10961,
+    "toolsCount": 11,
+    "toolsFile": "src/tools/definitions.py :: TOOL_DEFINITIONS"
+  },
+  "voice": {
+    "provider": "11labs",
+    "voiceId": "g6xIsTj2HwM6VR4iXFCw",
+    "voiceName": "Jessica Anne Bogart",
+    "model": "eleven_flash_v2_5",
+    "stability": 0.35,
+    "similarityBoost": 0.8,
+    "optimizeStreamingLatency": 3
+  },
+  "transcriber": {
+    "provider": "deepgram",
+    "model": "nova-3",
+    "language": "en",
+    "endpointing": 200,
+    "note": "language=en \u2014 bilingual handled by LLM system prompt, not transcriber"
+  },
+  "server": {
+    "url": "https://taskdeskr-voice-core.onrender.com/vapi/webhook",
+    "timeoutSeconds": 30
+  },
+  "phone": {
+    "number": "+18302408224",
+    "provider": "vapi",
+    "assistantId": "32535107-c49c-4aa7-b9e1-c7ec3184d313",
+    "status": "active"
+  },
+  "tools": [
+    "save_caller_info",
+    "save_qualification_data",
+    "create_lead_opportunity",
+    "check_availability",
+    "create_appointment",
+    "send_website_link",
+    "send_demo_booking_link",
+    "send_sms_confirmation",
+    "send_internal_alert",
+    "create_follow_up_task",
+    "end_call"
+  ]
+}
