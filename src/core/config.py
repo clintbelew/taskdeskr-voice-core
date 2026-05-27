@@ -8,9 +8,8 @@ defined as typed constants below — they can be promoted to env vars at any
 time by simply reading from settings instead of the constant.
 
 GHL Location ID:  BsrmNxNTZZ6OsEosQFuo
-GHL Pipeline:     Voice Bot Pipeline  (zoFFyj9AhfeMiGeaTaqh)
+GHL Pipeline:     El Jefe - Law Firm Demo  (qTGXyS5rpHPni3XRgDyD)
 """
-
 from functools import lru_cache
 from typing import Literal
 
@@ -70,17 +69,24 @@ class Settings(BaseSettings):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class GHLPipeline:
-    """Voice Bot Pipeline — zoFFyj9AhfeMiGeaTaqh"""
-    PIPELINE_ID = "zoFFyj9AhfeMiGeaTaqh"
+    """El Jefe - Law Firm Demo — qTGXyS5rpHPni3XRgDyD"""
+    PIPELINE_ID = "qTGXyS5rpHPni3XRgDyD"
 
     class Stages:
-        NEW_LEAD            = "c7b87774-87ed-4297-b5fd-c80232b06e3d"
-        BOOKING_LINK_SENT   = "fb95cee1-80a0-444d-a971-f0886b6966bb"
-        APPOINTMENT_BOOKED  = "4749ca93-a22c-4e2b-b1a0-a695dacd6608"
-        CONFIRMED_SHOWED    = "9a1a6cd2-d96a-4893-9009-218c491ab916"
-        NO_SHOW             = "150e6fe5-04e9-4b43-8223-c8384d72ec30"
-        CONVERTED           = "33e671f8-6851-4655-9ad8-304e35a6d8d2"
-        DISQUALIFIED        = "20a039b3-10ce-47d4-99e4-e04147845301"
+        # El Jefe - Law Firm Demo stages
+        NEW_LEAD                = "17677624-40c1-4ca6-9cc1-cdbd0514481d"
+        INTAKE_COMPLETED        = "3c20c16e-ba75-42a7-aa48-2ed7818ceb31"
+        CONSULTATION_REQUESTED  = "afa3eebd-d369-47bb-bf86-e238a9e8e74b"
+        RETAINED                = "4f2591d1-d8a7-4c18-9d6e-8cb68f6dfe26"
+        NOT_QUALIFIED           = "c329c64f-31f7-479a-85ad-578610ad36df"
+
+        # Aliases for backward compatibility with dispatcher.py references
+        BOOKING_LINK_SENT   = INTAKE_COMPLETED     # maps to Intake Completed
+        APPOINTMENT_BOOKED  = CONSULTATION_REQUESTED  # maps to Consultation Requested
+        CONFIRMED_SHOWED    = RETAINED             # maps to Retained
+        NO_SHOW             = NOT_QUALIFIED        # maps to Not Qualified
+        CONVERTED           = RETAINED             # maps to Retained
+        DISQUALIFIED        = NOT_QUALIFIED        # maps to Not Qualified
 
 
 class GHLCalendars:
