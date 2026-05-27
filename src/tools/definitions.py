@@ -179,10 +179,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "create_appointment",
             "description": (
-                "Book a demo consultation appointment directly in the GHL calendar. "
-                "Call this ONLY after the caller has confirmed their chosen time slot. "
-                "After booking, verbally confirm the date and time to the caller, "
-                "then send them a confirmation SMS."
+                "Book a consultation appointment directly in the GHL calendar. "
+                "Call this ONLY after the caller has explicitly confirmed their chosen time slot. "
+                "CRITICAL: You MUST pass the slot_iso that exactly matches the time the caller requested. "
+                "If the caller said '9 AM', find the slot in the available_slots list where the time is 9:00 AM "
+                "and pass that exact ISO string. Do NOT round up or substitute a nearby time. "
+                "If the exact requested time is not in the available slots list, tell the caller it is unavailable "
+                "and offer the closest alternatives — do not silently book a different time. "
+                "After booking, verbally confirm the exact date and time to the caller."
             ),
             "parameters": {
                 "type": "object",
@@ -190,8 +194,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "slot_iso": {
                         "type": "string",
                         "description": (
-                            "The ISO datetime string of the selected slot, "
-                            "exactly as returned by check_availability (e.g. '2026-04-07T10:00:00-05:00')."
+                            "The ISO datetime string of the slot the caller explicitly chose, "
+                            "taken exactly from the list returned by check_availability. "
+                            "Match the caller's stated time (e.g. '9 AM' means find the slot with time '9:00 AM' in the list). "
+                            "Never substitute a different time. Example: '2026-04-07T09:00:00-05:00'."
                         ),
                     },
                     "caller_name": {
