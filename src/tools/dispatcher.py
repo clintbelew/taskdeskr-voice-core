@@ -97,6 +97,7 @@ async def dispatch(
         "send_booking_link":        _handle_send_demo_booking_link,
         "send_sms_confirmation":    _handle_send_sms_confirmation,
         "send_internal_alert":      _handle_send_internal_alert,
+        "create_follow_up_task":    _handle_create_follow_up_task,
         "end_call":                 _handle_end_call,
     }
 
@@ -782,6 +783,98 @@ async def _handle_send_internal_alert(
     return {
         "result": (
             "Internal alert sent to attorney team. "
+            "Do NOT announce this — it happens silently in the background."
+        )
+    }
+
+
+async def _handle_create_follow_up_task(
+    args: dict[str, Any],
+    call_state: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Create a GHL follow-up task for the attorney team.
+    Fires after send_internal_alert for urgent cases.
+    For consultation-requested cases, moves opportunity to CONSULTATION_REQUESTED stage.
+    """
+    contact_id = call_state.get("contact_id")
+    if not contact_id:
+        logger.warning("create_follow_up_task: no contact_id, skipping")
+        return {"result": "Follow-up task noted internally."}
+
+    first_name  = call_state.get("caller_first_name", "").strip()
+    last_name   = call_state.get("caller_last_name", "").strip()
+    caller_name = f"{first_name} {last_name}".strip() or "Unknown Caller"
+
+    task_type     = args.get("task_type", "callback")   # callback | consultation
+    urgency       = args.get("urgency", "standard")
+    matter_type   = args.get("matter_type", "")
+    notes         = args.get("notes", "")
+    is_urgent     = urgency.lower() in ("urgent", "tier1", "high", "critical")
+    is_consult    = task_type.lower() in ("consultation", "consult", "booking")
+
+    # Build task title
+    if is_urgent:
+        title = f"🚨 URGENT callback — {caller_name}"
+    elif is_consult:
+        title = f"📅 Consultation requested — {caller_name}"
+    else:
+        title = f"📞 Callback — {caller_name}"
+
+    # Build task body
+    body_parts = []
+    if matter_type:
+        body_parts.append(f"Matter: {matter_type}")
+    if notes:
+        body_parts.append(f"Notes: {notes}")
+    phone = call_state.get("phone", "")
+    if phone:
+        body_parts.append(f"Phone: {phone}")
+    body_parts.append("— Created by TaskDeskr AI Intake")
+    task_body = "\n".join(body_parts)
+
+    # Create the task in GHL
+    try:
+        await ghl.create_follow_up_task(
+            contact_id=contact_id,
+            title=title,
+            body=task_body,
+        )
+        logger.info(
+            "Follow-up task created",
+            extra={"contact_id": contact_id, "title": title, "urgency": urgency},
+        )
+    except ghl.GHLError as exc:
+        logger.error(
+            "Failed to create follow-up task",
+            extra={"contact_id": contact_id, "error": str(exc)},
+        )
+        return {"result": "Follow-up task noted internally — GHL task creation failed."}
+
+    # If consultation requested, move opportunity stage
+    if is_consult:
+        opportunity_id = call_state.get("opportunity_id")
+        if opportunity_id:
+            try:
+                await ghl.move_opportunity_stage(
+                    opportunity_id=opportunity_id,
+                    stage_id=GHLPipeline.Stages.CONSULTATION_REQUESTED,
+                )
+                call_state["pipeline_stage"] = "consultation_requested"
+                logger.info(
+                    "Opportunity moved to Consultation Requested",
+                    extra={"opportunity_id": opportunity_id},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not move opportunity to Consultation Requested",
+                    extra={"opportunity_id": opportunity_id, "error": str(exc)},
+                )
+
+    call_state["follow_up_task_created"] = True
+    return {
+        "result": (
+            "Follow-up task created for the attorney team. "
             "Do NOT announce this — it happens silently in the background."
         )
     }

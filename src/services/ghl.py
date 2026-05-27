@@ -569,6 +569,69 @@ async def send_sms(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 7. Tasks
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def create_follow_up_task(
+    contact_id: str,
+    title: str,
+    due_date_iso: str = "",
+    assigned_to: str = GHLUsers.DEFAULT_ASSIGNED,
+    body: str = "",
+) -> dict[str, Any]:
+    """
+    Create a follow-up task on a GHL contact.
+
+    Args:
+        contact_id:   GHL contact ID to attach the task to.
+        title:        Task title (e.g. "Urgent callback — Maria Gonzalez").
+        due_date_iso: ISO 8601 due datetime string (e.g. "2026-05-27T18:00:00-05:00").
+                      Defaults to today at 5 PM Central if empty.
+        assigned_to:  GHL user ID to assign the task to (default: Clint Belew).
+        body:         Optional task description / notes.
+
+    Returns:
+        The created task dict from GHL.
+    """
+    from datetime import datetime, timezone, timedelta
+    import pytz
+
+    if not due_date_iso:
+        # Default: today at 5 PM Central
+        central = pytz.timezone("America/Chicago")
+        now_central = datetime.now(central)
+        due_dt = now_central.replace(hour=17, minute=0, second=0, microsecond=0)
+        if due_dt < now_central:
+            # Already past 5 PM — set to 1 hour from now
+            due_dt = now_central + timedelta(hours=1)
+        due_date_iso = due_dt.isoformat()
+
+    payload: dict[str, Any] = {
+        "title":     title,
+        "dueDate":   due_date_iso,
+        "status":    "incompleted",
+        "contactId": contact_id,
+    }
+    if assigned_to:
+        payload["assignedTo"] = assigned_to
+    if body:
+        payload["body"] = body
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        response = await client.post(
+            f"{GHL_BASE}/contacts/{contact_id}/tasks/",
+            headers=_headers(),
+            json=payload,
+        )
+    _raise_for_status(response, "create_follow_up_task")
+    logger.info(
+        "Follow-up task created",
+        extra={"contact_id": contact_id, "title": title, "due": due_date_iso},
+    )
+    return response.json()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 

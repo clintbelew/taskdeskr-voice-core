@@ -327,7 +327,47 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
 
-    # ── 10. End call ───────────────────────────────────────────────────────────
+    # ── 10. Create follow-up task ────────────────────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "server": {"url": VAPI_WEBHOOK_URL},
+        "function": {
+            "name": "create_follow_up_task",
+            "description": (
+                "Create a follow-up task in GHL for the attorney team. "
+                "Call this silently after send_internal_alert completes. "
+                "For urgent/Tier 1 cases: task_type='callback', urgency='tier1'. "
+                "For consultation-requested cases: task_type='consultation', urgency='standard'. "
+                "NEVER announce this to the caller."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_type": {
+                        "type": "string",
+                        "enum": ["callback", "consultation"],
+                        "description": "Type of follow-up task: callback for standard/urgent, consultation if caller requested a consult",
+                    },
+                    "urgency": {
+                        "type": "string",
+                        "enum": ["standard", "urgent", "tier1"],
+                        "description": "Urgency level of the task",
+                    },
+                    "matter_type": {
+                        "type": "string",
+                        "description": "The legal matter type (e.g. personal injury, immigration, criminal defense)",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional short notes for the task body (e.g. 'hospitalized, surgery scheduled')",
+                    },
+                },
+                "required": ["task_type"],
+            },
+        },
+    },
+
+    # ── 11. End call ──────────────────────────────────────────────────────────────────────────────
 
     {
         "type": "function",
