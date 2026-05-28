@@ -569,20 +569,32 @@ def _extract_phone(call: dict[str, Any]) -> Optional[str]:
 
 def _get_el_jefe_system_prompt() -> str:
     """
-    Return the El Jefe system prompt.
-    Reads from the Vapi assistant's configured system prompt via the
-    ctx_service module (which holds the BASE_SYSTEM_PROMPT constant).
-    Falls back to a minimal prompt if unavailable.
+    Return the El Jefe system prompt with today's date prepended.
+
+    Injecting the current date at call time ensures the LLM can correctly
+    resolve relative dates like "tomorrow" or "this week" when calling
+    check_availability. Without this, the LLM has no date grounding and
+    will hallucinate past dates (e.g. 2025-01-09), causing the calendar
+    API to return empty results and falling back to the booking link.
     """
+    from datetime import datetime
+    import pytz
+    tz = pytz.timezone("America/Chicago")
+    today_str = datetime.now(tz).strftime("%A, %B %-d, %Y")
+    date_header = (
+        f"TODAY'S DATE: {today_str} (Central Time). "
+        f"Use this as your date baseline for all scheduling. "
+        f"Never pass a date before today to check_availability.\n\n"
+    )
     try:
         # Try to get the El Jefe-specific prompt from context service
         prompt = getattr(ctx_service, "EL_JEFE_SYSTEM_PROMPT", None)
         if prompt:
-            return prompt
+            return date_header + prompt
         # Fall back to base system prompt
-        return ctx_service.BASE_SYSTEM_PROMPT
+        return date_header + ctx_service.BASE_SYSTEM_PROMPT
     except Exception:
-        return (
+        return date_header + (
             "You are the AI Legal Intake Coordinator for the Law Office of Attorney Rudy Castillo. "
             "Collect caller information and qualify their legal matter. "
             "You are bilingual in English and Spanish."
