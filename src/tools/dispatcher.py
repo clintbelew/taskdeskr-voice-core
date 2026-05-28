@@ -475,9 +475,9 @@ async def _handle_create_appointment(
     first_name = call_state.get("caller_first_name", "").strip()
     greeting   = f"Hi {first_name}! " if first_name else "Hi! "
     sms_body   = (
-        f"{greeting}Your TaskDeskr demo consultation is confirmed for "
-        f"{readable_slot}. Our team will walk you through everything. "
-        f"Questions? Reply to this message. Reply STOP to opt out."
+        f"{greeting}Your consultation with the Law Office of Attorney Rudy Castillo "
+        f"is confirmed for {readable_slot}. "
+        f"Questions? Call (830) 240-8224. Reply STOP to opt out."
     )
     try:
         await ghl.send_sms(contact_id=contact_id, message=sms_body, from_number=settings.GHL_SMS_FROM_NUMBER)
@@ -490,8 +490,8 @@ async def _handle_create_appointment(
     return {
         "result": (
             f"Appointment booked successfully for {readable_slot}. "
-            f"Tell the caller: 'You're all set! Your demo consultation is confirmed for "
-            f"{readable_slot}.{sms_note} We look forward to speaking with you!'"
+            f"Tell the caller: 'You're all set! Your consultation with Attorney Castillo's office is confirmed for "
+            f"{readable_slot}.{sms_note} We look forward to speaking with you.'"
         )
     }
 
