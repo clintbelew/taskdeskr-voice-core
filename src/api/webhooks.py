@@ -259,7 +259,7 @@ async def _handle_assistant_request(
             "transcriber": {
                 "provider": "deepgram",
                 "model": "nova-3",
-                "language": "en",  # Deepgram nova-3 — bilingual handled by LLM, not transcriber
+                "language": "multi",  # Deepgram nova-3 multilingual — auto-detects English/Spanish
                 "endpointing": 200,  # LATENCY FIX: Detects end-of-speech faster
             },
             "firstMessage": (
@@ -571,14 +571,16 @@ def _get_el_jefe_system_prompt() -> str:
     """
     Return the El Jefe system prompt with today's date prepended.
 
-    Injecting the current date at call time ensures the LLM can correctly
-    resolve relative dates like "tomorrow" or "this week" when calling
-    check_availability. Without this, the LLM has no date grounding and
-    will hallucinate past dates (e.g. 2025-01-09), causing the calendar
-    API to return empty results and falling back to the booking link.
+    Loads el_jefe_system_prompt.txt from the repo root at call time so the
+    LLM always receives the full bilingual, scheduling-aware El Jefe prompt.
+    The current date (Central Time) is injected at the top so the LLM can
+    correctly resolve relative dates like "tomorrow" when calling
+    check_availability — preventing past-date hallucinations.
     """
+    import pathlib
     from datetime import datetime
     import pytz
+
     tz = pytz.timezone("America/Chicago")
     today_str = datetime.now(tz).strftime("%A, %B %-d, %Y")
     date_header = (
@@ -586,12 +588,17 @@ def _get_el_jefe_system_prompt() -> str:
         f"Use this as your date baseline for all scheduling. "
         f"Never pass a date before today to check_availability.\n\n"
     )
+
+    # Load the El Jefe-specific prompt from disk (repo root)
+    prompt_path = pathlib.Path(__file__).parent.parent.parent / "el_jefe_system_prompt.txt"
     try:
-        # Try to get the El Jefe-specific prompt from context service
-        prompt = getattr(ctx_service, "EL_JEFE_SYSTEM_PROMPT", None)
-        if prompt:
-            return date_header + prompt
-        # Fall back to base system prompt
+        if prompt_path.exists():
+            return date_header + prompt_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to load el_jefe_system_prompt.txt", extra={"error": str(exc)})
+
+    # Fallback: use BASE_SYSTEM_PROMPT if file is missing
+    try:
         return date_header + ctx_service.BASE_SYSTEM_PROMPT
     except Exception:
         return date_header + (
